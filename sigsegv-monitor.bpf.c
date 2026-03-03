@@ -57,7 +57,7 @@ inline void cr2stats_push(struct cr2_stats* stats, struct cr2_stat* value) {
 
 // The `index` parameter here is not an index in the array, but an index in the ring buffer,
 // i.e. passing an index 0 would return the oldest element in the ring buffer.
-inline struct cr2_stat* cr2stats_get(struct cr2_stats* stats, u32 index) {
+inline struct cr2_stat* cr2stats_get(struct cr2_stats* stats, u64 index) {
     if (stats->count == MAX_USER_PF_ENTRIES) {
         index += stats->head;
         if (index >= MAX_USER_PF_ENTRIES) {
