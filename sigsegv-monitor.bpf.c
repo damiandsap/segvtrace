@@ -59,17 +59,12 @@ inline void cr2stats_push(struct cr2_stats* stats, struct cr2_stat* value) {
 // i.e. passing an index 0 would return the oldest element in the ring buffer.
 inline struct cr2_stat* cr2stats_get(struct cr2_stats* stats, u64 index) {
     if (stats->count == MAX_USER_PF_ENTRIES) {
-        index += stats->head;
-        if (index >= MAX_USER_PF_ENTRIES) {
-            index -= MAX_USER_PF_ENTRIES;
-        }
+        index += stats->head; // this makes index unbounded to the verifier
     }
 
-    if (index < MAX_USER_PF_ENTRIES) {
-        return stats->stat + index;
-    }
-
-    return NULL;
+    // establish bound for index; also helps if above index += ... needs to wrap around
+    index %= MAX_USER_PF_ENTRIES;
+    return stats->stat + index;
 }
 #endif
 
