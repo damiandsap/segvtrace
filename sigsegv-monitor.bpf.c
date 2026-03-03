@@ -171,7 +171,19 @@ int trace_sigsegv(struct trace_event_raw_signal_generate *ctx) {
     struct cr2_stats *cr2stats = bpf_map_lookup_elem(&pid_cr2, &pid);
 
     if (cr2stats) {
-        for (u32 i = 0; i < cr2stats->count && i < MAX_USER_PF_ENTRIES; i++) {
+        /* If we use a u32 for i, the verifier loses track of its value and rejects the program:
+         * 151: (bf) r4 = r5                     ; R4_w=scalar(id=4) R5_w=scalar(id=4)
+         * ...
+         * 156: (67) r4 <<= 32                   ; R4_w=scalar(smax=9223372032559808512,umax=18446744069414584320,var_off=(0x0; 0xffffffff00000000),s32_min=0,s32_max=0,u32_max=0)
+         * 157: (77) r4 >>= 32                   ; R4_w=scalar(umax=4294967295,var_off=(0x0; 0xffffffff))
+         * 158: (27) r4 *= 24                    ; R4_w=scalar(umax=103079215080,var_off=(0x0; 0x1ffffffff8),s32_max=2147483640,u32_max=-8)
+         * 159: (bf) r5 = r0                     ; R0=map_value(off=0,ks=4,vs=400,imm=0) R5_w=map_value(off=0,ks=4,vs=400,imm=0)
+         * 160: (0f) r5 += r4                    ; R4_w=scalar(umax=103079215080,var_off=(0x0; 0x1ffffffff8),s32_max=2147483640,u32_max=-8) R5_w=map_value(off=0,ks=4,vs=400,umax=103079215080,var_off=(0x0; 0x1ffffffff8),s32_max=2147483640,u32_max=-8)
+         * ; event->pf[i].cr2 = stat->cr2;
+         * 161: (79) r4 = *(u64 *)(r5 +0)
+         * R5 unbounded memory access, make sure to bounds check any such access
+         */
+        for (u64 i = 0; i < cr2stats->count && i < MAX_USER_PF_ENTRIES; i++) {
             struct cr2_stat* stat = cr2stats_get(cr2stats, i);
             if (stat) {
                 event->pf[i].cr2 = stat->cr2;
