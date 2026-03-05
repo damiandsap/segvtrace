@@ -1,6 +1,7 @@
 #define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <unistd.h>
 #include <fcntl.h>
 #include <signal.h>
@@ -140,7 +141,18 @@ void clean() {
     free(cpus_fd);
 }
 
-int main() {
+void print_version(char const* prefix, FILE* out) {
+    fprintf(out, "%scommit %s committed %s\n", prefix, GIT_REV, GIT_DATE);
+}
+
+int main(int argc, char *argv[]) {
+    if (argc > 1 && (strcmp(argv[1], "-v") == 0 || strcmp(argv[1], "--version") == 0)) {
+        print_version("", stdout);
+        return 0;
+    } else {
+        print_version("[*] version ", stderr);
+    }
+
     struct sigsegv_monitor_bpf *skel;
     struct perf_buffer *pb = NULL;
 

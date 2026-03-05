@@ -2,8 +2,19 @@
 CLANG ?= clang
 BPFTOOL ?= bpftool
 
+# Git version info (build fails if not available)
+GIT_REV := $(shell git rev-parse --short HEAD)
+GIT_DATE := $(shell git log -1 --format=%cI)
+ifeq ($(GIT_REV),)
+    $(error GIT_REV is not set - not in a git repository?)
+endif
+ifeq ($(GIT_DATE),)
+    $(error GIT_DATE is not set - not in a git repository?)
+endif
+
 # Output executable name
 APP = sigsegv_monitor
+SAMPLE = sample_segfault
 
 # Source files
 BPF_SRC = sigsegv-monitor.bpf.c
@@ -17,15 +28,20 @@ VMLINUX = vmlinux.h
 # Compiler flags
 # -g: Debug info (required for BTF)
 # -O2: Optimization (required for BPF)
-CFLAGS := -g -O2 -Wall
+CFLAGS := -g -O2 -Wall -DGIT_REV=\"$(GIT_REV)\" -DGIT_DATE=\"$(GIT_DATE)\"
 BPF_CFLAGS := -g -O2 -target bpf -D__TARGET_ARCH_x86
 
 # Libs to link
 LIBS := -lbpf -lelf -lz
 
-.PHONY: all clean
+.PHONY: all clean sample test
 
-all: $(APP)
+all: $(APP) $(SAMPLE)
+
+sample: $(SAMPLE)
+
+test: $(SAMPLE)
+	sudo python3 verify_monitor.py
 
 .DELETE_ON_ERROR:
 
@@ -45,6 +61,10 @@ $(APP): $(USER_SRC) $(SKEL_OBJ)
 	@echo "  CC      $@"
 	$(CLANG) $(CFLAGS) $(USER_SRC) $(LIBS) -o $@
 
+$(SAMPLE): sample_segfault.c
+	@echo "  CC      $@"
+	$(CLANG) -g -O0 -Wall $< -o $@
+
 clean:
 	@echo "  CLEAN"
-	rm -f $(APP) $(BPF_OBJ) $(SKEL_OBJ) $(VMLINUX)
+	rm -f $(APP) $(BPF_OBJ) $(SKEL_OBJ) $(VMLINUX) $(SAMPLE)

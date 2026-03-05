@@ -57,19 +57,14 @@ inline void cr2stats_push(struct cr2_stats* stats, struct cr2_stat* value) {
 
 // The `index` parameter here is not an index in the array, but an index in the ring buffer,
 // i.e. passing an index 0 would return the oldest element in the ring buffer.
-inline struct cr2_stat* cr2stats_get(struct cr2_stats* stats, u32 index) {
+inline struct cr2_stat* cr2stats_get(struct cr2_stats* stats, u64 index) {
     if (stats->count == MAX_USER_PF_ENTRIES) {
-        index += stats->head;
-        if (index >= MAX_USER_PF_ENTRIES) {
-            index -= MAX_USER_PF_ENTRIES;
-        }
+        index += stats->head; // this makes index unbounded to the verifier
     }
 
-    if (index < MAX_USER_PF_ENTRIES) {
-        return stats->stat + index;
-    }
-
-    return NULL;
+    // establish bound for index; also helps if above index += ... needs to wrap around
+    index %= MAX_USER_PF_ENTRIES;
+    return stats->stat + index;
 }
 #endif
 
@@ -166,12 +161,24 @@ int trace_sigsegv(struct trace_event_raw_signal_generate *ctx) {
     }
 
     event->pf_count = 0;
-    #ifdef TRACE_PF_CR2
-    u32 pid = task->pid;
+#ifdef TRACE_PF_CR2
+    u32 const pid = task->pid;
     struct cr2_stats *cr2stats = bpf_map_lookup_elem(&pid_cr2, &pid);
 
     if (cr2stats) {
-        for (u32 i = 0; i < cr2stats->count && i < MAX_USER_PF_ENTRIES; i++) {
+        /* If we use a u32 for i, the verifier loses track of its value and rejects the program:
+         * 151: (bf) r4 = r5                     ; R4_w=scalar(id=4) R5_w=scalar(id=4)
+         * ...
+         * 156: (67) r4 <<= 32                   ; R4_w=scalar(smax=9223372032559808512,umax=18446744069414584320,var_off=(0x0; 0xffffffff00000000),s32_min=0,s32_max=0,u32_max=0)
+         * 157: (77) r4 >>= 32                   ; R4_w=scalar(umax=4294967295,var_off=(0x0; 0xffffffff))
+         * 158: (27) r4 *= 24                    ; R4_w=scalar(umax=103079215080,var_off=(0x0; 0x1ffffffff8),s32_max=2147483640,u32_max=-8)
+         * 159: (bf) r5 = r0                     ; R0=map_value(off=0,ks=4,vs=400,imm=0) R5_w=map_value(off=0,ks=4,vs=400,imm=0)
+         * 160: (0f) r5 += r4                    ; R4_w=scalar(umax=103079215080,var_off=(0x0; 0x1ffffffff8),s32_max=2147483640,u32_max=-8) R5_w=map_value(off=0,ks=4,vs=400,umax=103079215080,var_off=(0x0; 0x1ffffffff8),s32_max=2147483640,u32_max=-8)
+         * ; event->pf[i].cr2 = stat->cr2;
+         * 161: (79) r4 = *(u64 *)(r5 +0)
+         * R5 unbounded memory access, make sure to bounds check any such access
+         */
+        for (u64 i = 0; i < cr2stats->count && i < MAX_USER_PF_ENTRIES; i++) {
             struct cr2_stat* stat = cr2stats_get(cr2stats, i);
             if (stat) {
                 event->pf[i].cr2 = stat->cr2;
@@ -184,7 +191,7 @@ int trace_sigsegv(struct trace_event_raw_signal_generate *ctx) {
 
         bpf_map_delete_elem(&pid_cr2, &pid);
     }
-    #endif
+#endif
 
     // TODO: when is this snapshot taken? or does the CPU not do LBR in the kernel?
     long ret = bpf_get_branch_snapshot(&event->lbr, sizeof(event->lbr), 0);
@@ -203,13 +210,12 @@ int trace_sigsegv(struct trace_event_raw_signal_generate *ctx) {
 #ifdef TRACE_PF_CR2
 SEC("tracepoint/exceptions/page_fault_user")
 int trace_page_fault(struct trace_event_raw_page_fault_user *ctx) {
-    struct cr2_stat stat;
-    u32 pid;
-
-    stat.cr2 = ctx->address;
-    stat.err = ctx->error_code;
-    stat.tai = bpf_ktime_get_tai_ns();
-    pid = (u32)bpf_get_current_pid_tgid();
+    struct cr2_stat stat = {
+        .cr2 = ctx->address,
+        .err = ctx->error_code,
+        .tai = bpf_ktime_get_tai_ns()
+    };
+    u32 const pid = (u32)bpf_get_current_pid_tgid();
 
     struct cr2_stats *cr2stats = bpf_map_lookup_elem(&pid_cr2, &pid);
     if (cr2stats) {
