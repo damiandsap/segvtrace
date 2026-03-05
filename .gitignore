@@ -2,3 +2,5 @@ vmlinux.h
 *.o
 *.skel.h
 sigsegv_monitor
+sample_segfault
+__pycache__

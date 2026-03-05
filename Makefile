@@ -14,6 +14,7 @@ endif
 
 # Output executable name
 APP = sigsegv_monitor
+SAMPLE = sample_segfault
 
 # Source files
 BPF_SRC = sigsegv-monitor.bpf.c
@@ -33,9 +34,14 @@ BPF_CFLAGS := -g -O2 -target bpf -D__TARGET_ARCH_x86
 # Libs to link
 LIBS := -lbpf -lelf -lz
 
-.PHONY: all clean
+.PHONY: all clean sample test
 
-all: $(APP)
+all: $(APP) $(SAMPLE)
+
+sample: $(SAMPLE)
+
+test: $(SAMPLE)
+	sudo python3 verify_monitor.py
 
 .DELETE_ON_ERROR:
 
@@ -55,6 +61,10 @@ $(APP): $(USER_SRC) $(SKEL_OBJ)
 	@echo "  CC      $@"
 	$(CLANG) $(CFLAGS) $(USER_SRC) $(LIBS) -o $@
 
+$(SAMPLE): sample_segfault.c
+	@echo "  CC      $@"
+	$(CLANG) -g -O0 -Wall $< -o $@
+
 clean:
 	@echo "  CLEAN"
-	rm -f $(APP) $(BPF_OBJ) $(SKEL_OBJ) $(VMLINUX)
+	rm -f $(APP) $(BPF_OBJ) $(SKEL_OBJ) $(VMLINUX) $(SAMPLE)
