@@ -4,6 +4,8 @@
 #define MAX_USER_PF_ENTRIES 16
 
 #define TRACE_PF_CR2
+#define TRACE_PF_CR2_INCREMENTAL
+#define TRACE_KERNEL_SPACE_BRANCHES
 
 struct page_fault_info_t {
     u64 cr2;
@@ -37,6 +39,7 @@ struct user_regs_t {
 
 // WARNING: this is for the SENDING process (e.g. pid) of the signal!
 struct event_t {
+    int signal;
     int si_code;
 
     u32 tgid; // the PROCESS id!
