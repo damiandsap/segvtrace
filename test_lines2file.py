@@ -29,13 +29,12 @@ class Lines2FileTest(unittest.TestCase):
     # Helpers
     # ------------------------------------------------------------------
 
-    def _start(self, stdin_pipe=True):
-        """Start lines2file as a subprocess with a pipe on stdin."""
+    def _start(self):
+        """Start lines2file with a pipe on stdin; stderr passes through."""
         proc = subprocess.Popen(
             [BINARY, self.outpath],
-            stdin=subprocess.PIPE if stdin_pipe else subprocess.DEVNULL,
+            stdin=subprocess.PIPE,
             stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
         )
         # Give it a moment to open the output file.
         time.sleep(0.05)
@@ -74,6 +73,7 @@ class Lines2FileTest(unittest.TestCase):
         time.sleep(0.1)
         proc.send_signal(signal.SIGTERM)
         proc.wait(timeout=5)
+        proc.stdin.close()
         self.assertEqual(proc.returncode, 0)
         self.assertEqual(self._read_output(), "line1\n")
 
@@ -85,6 +85,7 @@ class Lines2FileTest(unittest.TestCase):
         time.sleep(0.1)
         proc.send_signal(signal.SIGINT)
         proc.wait(timeout=5)
+        proc.stdin.close()
         self.assertEqual(proc.returncode, 0)
         self.assertEqual(self._read_output(), "line1\n")
 
@@ -210,10 +211,8 @@ class Lines2FileTest(unittest.TestCase):
             stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE,
         )
-        proc.wait(timeout=5)
+        _, err = proc.communicate(timeout=5)
         self.assertNotEqual(proc.returncode, 0)
-        err = proc.stderr.read()
-        proc.stderr.close()
         self.assertIn(b"Usage", err)
         self.assertIn(b"SIGUSR1", err)
 
@@ -226,10 +225,8 @@ class Lines2FileTest(unittest.TestCase):
                 stdout=subprocess.PIPE,
                 stderr=subprocess.DEVNULL,
             )
-            proc.wait(timeout=5)
+            out, _ = proc.communicate(timeout=5)
             self.assertEqual(proc.returncode, 0, f"flag={flag}")
-            out = proc.stdout.read()
-            proc.stdout.close()
             self.assertIn(b"Usage", out)
             self.assertIn(b"SIGUSR1", out)
 
