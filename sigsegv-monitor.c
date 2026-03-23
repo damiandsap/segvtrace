@@ -46,9 +46,14 @@ void setup_global_lbr() {
     pe.sample_type = PERF_SAMPLE_BRANCH_STACK;
     pe.branch_sample_type = PERF_SAMPLE_BRANCH_ANY;
     pe.disabled = 1;
-    pe.exclude_kernel = 1;
     pe.exclude_hv = 1;
     pe.sample_period = ((uint64_t)1) << 62; // newer kernels don't activate LBR if this is zero
+
+#ifdef TRACE_KERNEL_SPACE_BRANCHES
+    pe.exclude_kernel = 0;
+#else
+    pe.exclude_kernel = 1;
+#endif
 
     for_each_cpu(cpu) {
         //                                          pid     group_fs, flags
@@ -66,13 +71,30 @@ void setup_global_lbr() {
     }
 }
 
+const char* signal_to_string(int signal)
+{
+    switch (signal) {
+        case 4: return "SIGILL";
+        case 11: return "SIGSEGV";
+    }
+
+    return NULL;
+}
+
 void handle_event(void *ctx, int cpu, void *data, __u32 data_sz) {
     struct event_t *e = data;
+    const char* signal = signal_to_string(e->signal);
 
-    printf("{\"cpu\":%d,", cpu);
+    printf("{\"version\":{\"rev\":\"%s\",\"date\":\"%s\"},", GIT_REV, GIT_DATE);
+    printf("\"cpu\":%d,", cpu);
     printf("\"tai\":%llu,", e->tai);
     printf("\"process\":{\"rootns_pid\":%d,\"ns_pid\":%d,\"comm\":\"%s\"},", e->tgid, e->pidns_tgid, e->tgleader_comm);
     printf("\"thread\":{\"rootns_tid\":%d,\"ns_tid\":%d,\"comm\":\"%s\"},", e->pid, e->pidns_pid, e->comm);
+    if (signal) {
+        printf("\"signal\":\"%s\",", signal);
+    } else {
+        printf("\"signal\":%d,", e->signal);
+    }
     printf("\"si_code\":%d,", e->si_code);
     printf("\"registers\":{");
     printf("\"rax\":\"0x%016llx\",", e->regs.rax);

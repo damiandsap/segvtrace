@@ -31,7 +31,7 @@ struct cr2_stats {
 
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
-    __uint(max_entries, 1024);
+    __uint(max_entries, 10*1024);
     __type(key, u32);
     __type(value, struct cr2_stats);
 } pid_cr2 SEC(".maps");
@@ -91,19 +91,22 @@ inline void split_2u32(u64 in, u32* lower, u32* upper)
 }
 
 SEC("tracepoint/signal/signal_generate")
-int trace_sigsegv(struct trace_event_raw_signal_generate *ctx) {
+int trace_signal(struct trace_event_raw_signal_generate *ctx) {
     struct task_struct *task = NULL;
     struct pt_regs *regs = NULL;
     struct event_t *event;
     u32 key = 0;
 
-    if (ctx->sig != 11)
+    // SIGSEGV = 11
+    // SIGILL = 4
+    if (ctx->sig != 11 && ctx->sig != 4)
         return 0;
 
     event = bpf_map_lookup_elem(&heap, &key);
     if (!event)
         return 0; // Should never happen
 
+    event->signal = ctx->sig;
     event->si_code = ctx->code;
     event->tai = bpf_ktime_get_tai_ns();
 
@@ -189,7 +192,9 @@ int trace_sigsegv(struct trace_event_raw_signal_generate *ctx) {
             }
         }
 
+#ifdef TRACE_PF_CR2_INCREMENTAL
         bpf_map_delete_elem(&pid_cr2, &pid);
+#endif
     }
 #endif
 
