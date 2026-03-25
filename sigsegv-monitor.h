@@ -5,7 +5,7 @@
 
 #define TRACE_PF_CR2
 // #define TRACE_PF_CR2_INCREMENTAL
-#define TRACE_KERNEL_SPACE_BRANCHES
+// #define TRACE_KERNEL_SPACE_BRANCHES
 
 struct page_fault_info_t {
     u64 cr2;
