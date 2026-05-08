@@ -14,8 +14,10 @@
 
 // TODO: how to do this properly?
 #include <linux/types.h>
+typedef __u8 u8;
 typedef __u32 u32;
 typedef __u64 u64;
+typedef __s64 s64;
 #include "sigsegv-monitor.h"
 
 #define MAX_LBR_ENTRIES 32
@@ -119,6 +121,15 @@ void handle_event(void *ctx, int cpu, void *data, __u32 data_sz) {
     printf("\"err\":\"0x%016llx\",", e->regs.err);
     printf("\"cr2\":\"0x%016llx\"", e->regs.cr2);
     printf("},");
+
+    if (e->ip_snapshot_err == 0) {
+        printf("\"ip_snapshot\":\"");
+        for (int i = 0; i < IP_SNAPSHOT_SIZE; i++)
+            printf("%02x", e->ip_snapshot[i]);
+        printf("\",");
+    } else {
+        printf("\"ip_snapshot\":%lld,", (long long)e->ip_snapshot_err);
+    }
 
     #ifdef TRACE_PF_CR2
     printf("\"page_faults\": [");

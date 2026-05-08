@@ -2,6 +2,7 @@
 
 #define MAX_LBR_ENTRIES 32
 #define MAX_USER_PF_ENTRIES 16
+#define IP_SNAPSHOT_SIZE 32
 
 #define TRACE_PF_CR2
 // #define TRACE_PF_CR2_INCREMENTAL
@@ -58,4 +59,7 @@ struct event_t {
 
     u32 pf_count;
     struct page_fault_info_t pf[MAX_USER_PF_ENTRIES];
+
+    u8 ip_snapshot[IP_SNAPSHOT_SIZE];
+    s64 ip_snapshot_err;  // 0 = success, negative = bpf_probe_read_user error
 };

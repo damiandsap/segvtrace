@@ -15,6 +15,7 @@ Usage:
 
 import json
 import os
+import re
 import signal
 import subprocess
 import time
@@ -151,11 +152,18 @@ class MonitorEvent(NamedTuple):
     thread: ThreadInfo
     si_code: int
     registers: Registers
+    ip_snapshot: Optional[bytes]
     page_faults: List[PageFault]
     lbr: List[Optional[LbrEntry]]
 
     @classmethod
     def from_json(cls, raw: Dict[str, Any]) -> "MonitorEvent":
+        snap_raw = raw.get("ip_snapshot")
+        if isinstance(snap_raw, str):
+            ip_snapshot = bytes.fromhex(snap_raw)
+        else:
+            # Integer error code from bpf_probe_read_user
+            ip_snapshot = None
         return MonitorEvent(
             cpu=raw["cpu"],
             tai=raw["tai"],
@@ -163,6 +171,7 @@ class MonitorEvent(NamedTuple):
             thread=ThreadInfo.from_json(raw["thread"]),
             si_code=raw["si_code"],
             registers=Registers.from_json(raw["registers"]),
+            ip_snapshot=ip_snapshot,
             page_faults=[PageFault.from_json(pf) for pf in raw["page_faults"]],
             lbr=[
                 LbrEntry.from_json(e) if e is not None else None
@@ -174,6 +183,34 @@ class MonitorEvent(NamedTuple):
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+def get_trigger_segfault_opcodes(binary: str = SAMPLE_BIN) -> bytes:
+    """Return the raw instruction opcodes of the trigger_segfault function.
+
+    Uses objdump to disassemble the binary and extracts the byte sequence
+    corresponding to the <trigger_segfault> symbol.
+    """
+    output = subprocess.check_output(
+        ["objdump", "-d", "--disassemble=trigger_segfault", binary],
+    ).decode()
+    in_func = False
+    opcodes = bytearray()
+    for line in output.splitlines():
+        if "<trigger_segfault>:" in line:
+            in_func = True
+            continue
+        if in_func:
+            # A blank line or a section header ends the function.
+            if not line.strip() or "Disassembly of section" in line:
+                break
+            # objdump format: "  addr:\thex bytes \tinstruction"
+            m = re.match(r"\s+[0-9a-f]+:\s+((?:[0-9a-f]{2}\s)+)", line)
+            if m:
+                opcodes.extend(bytes.fromhex(m.group(1).replace(" ", "")))
+    if not opcodes:
+        raise RuntimeError(
+            f"Could not find trigger_segfault opcodes in {binary}")
+    return bytes(opcodes)
 
 def parse_monitor_events(text: str) -> List[MonitorEvent]:
     """Parse newline-delimited JSON into MonitorEvent objects."""
@@ -305,6 +342,36 @@ class TestSigsegvMonitor(unittest.TestCase):
                 f"(range [0x{pg_base:x}, 0x{pg_base + PAGE_SIZE:x})) "
                 f"was not matched by any recorded page fault",
             )
+
+    def test_ip_snapshot_valid(self) -> None:
+        """The ip_snapshot field must not be null."""
+        self.assertIsNotNone(
+            self.event.ip_snapshot,
+            "ip_snapshot is null — bpf_probe_read_user failed")
+
+    def test_ip_snapshot_matches_trigger_segfault(self) -> None:
+        """The 32-byte snapshot centered on RIP must match trigger_segfault opcodes."""
+        snapshot = self.event.ip_snapshot
+        if snapshot is None:
+            self.skipTest("ip_snapshot is null")
+
+        opcodes = get_trigger_segfault_opcodes()
+        # The snapshot is 32 bytes centered on RIP (RIP at offset 16).
+        # The faulting mov is at offset 16 within trigger_segfault.
+        # Therefore, the snapshot should cover the entire function from its start:
+        #   snapshot[0:16]  = bytes at [RIP-16, RIP) = trigger_segfault[0:16]
+        #   snapshot[16:16+N] = bytes at [RIP, RIP+N) = trigger_segfault[16:16+N]
+        # where N = min(16, len(opcodes) - 16)
+        func_len = len(opcodes)
+        snap_len = len(snapshot)
+
+        # The function starts 16 bytes before RIP, so it aligns with snapshot start
+        compare_len = min(func_len, snap_len)
+        self.assertEqual(
+            snapshot[:compare_len], opcodes[:compare_len],
+            "ip_snapshot does not match expected trigger_segfault opcodes.\n"
+            f"  Expected: {opcodes[:compare_len].hex()}\n"
+            f"  Got:      {snapshot[:compare_len].hex()}")
 
 
 if __name__ == "__main__":

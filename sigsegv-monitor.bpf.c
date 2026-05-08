@@ -139,7 +139,7 @@ int trace_signal(struct trace_event_raw_signal_generate *ctx) {
 
     // TODO: how are these regs acquired?
     regs = (struct pt_regs *)bpf_task_pt_regs(task);
-
+    event->ip_snapshot_err = -1;
     if (regs) {
         event->regs.rip = regs->ip;
         event->regs.rsp = regs->sp;
@@ -161,6 +161,10 @@ int trace_signal(struct trace_event_raw_signal_generate *ctx) {
         event->regs.flags = regs->flags;
 
         event->regs.cr2 = task->thread.cr2;
+
+        event->ip_snapshot_err = bpf_probe_read_user(
+            event->ip_snapshot, IP_SNAPSHOT_SIZE,
+            (void *)(regs->ip - IP_SNAPSHOT_SIZE / 2));
     }
 
     event->pf_count = 0;
