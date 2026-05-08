@@ -17,17 +17,19 @@ struct trace_event_raw_page_fault_user {
     char __data[0];
 };
 
-struct cr2_stat {
+// Information collected for one Page Fault
+struct pf_info {
     u64 cr2;
     u64 err;
     u64 tai;
 };
 
-// NOTE: cr2_stats must be valid when zero-initialized, since
+// Ring buffer of Page Fault information.
+// NOTE: pf_info_rb must be valid when zero-initialized, since
 // bpf_task_storage_get with BPF_LOCAL_STORAGE_GET_F_CREATE returns
 // a zero-filled struct on first access.
-struct cr2_stats {
-    struct cr2_stat stat[MAX_USER_PF_ENTRIES];
+struct pf_info_rb {
+    struct pf_info stat[MAX_USER_PF_ENTRIES];
     u64 head;
     u64 count;
 };
@@ -36,10 +38,10 @@ struct {
     __uint(type, BPF_MAP_TYPE_TASK_STORAGE);
     __uint(map_flags, BPF_F_NO_PREALLOC); // mandatory for task storage (inherently per-task allocated)
     __type(key, int);
-    __type(value, struct cr2_stats);
+    __type(value, struct pf_info_rb);
 } pid_cr2 SEC(".maps");
 
-inline void cr2stats_push(struct cr2_stats* stats, struct cr2_stat* value) {
+inline void cr2stats_push(struct pf_info_rb* stats, struct pf_info* value) {
     if (stats->head < MAX_USER_PF_ENTRIES) {
         stats->stat[stats->head] = *value;
 
@@ -55,7 +57,7 @@ inline void cr2stats_push(struct cr2_stats* stats, struct cr2_stat* value) {
 
 // The `index` parameter here is not an index in the array, but an index in the ring buffer,
 // i.e. passing an index 0 would return the oldest element in the ring buffer.
-inline struct cr2_stat* cr2stats_get(struct cr2_stats* stats, u64 index) {
+inline struct pf_info* cr2stats_get(struct pf_info_rb* stats, u64 index) {
     if (stats->count == MAX_USER_PF_ENTRIES) {
         index += stats->head; // this makes index unbounded to the verifier
     }
@@ -167,7 +169,7 @@ int trace_signal(struct trace_event_raw_signal_generate *ctx) {
 
     event->pf_count = 0;
 #ifdef TRACE_PF_CR2
-    struct cr2_stats *cr2stats = bpf_task_storage_get(&pid_cr2, task, 0, 0);
+    struct pf_info_rb *cr2stats = bpf_task_storage_get(&pid_cr2, task, 0, 0);
 
     if (cr2stats) {
         /* If we use a u32 for i, the verifier loses track of its value and rejects the program:
@@ -216,14 +218,14 @@ int trace_signal(struct trace_event_raw_signal_generate *ctx) {
 #ifdef TRACE_PF_CR2
 SEC("tracepoint/exceptions/page_fault_user")
 int trace_page_fault(struct trace_event_raw_page_fault_user *ctx) {
-    struct cr2_stat stat = {
+    struct pf_info stat = {
         .cr2 = ctx->address,
         .err = ctx->error_code,
         .tai = bpf_ktime_get_tai_ns()
     };
     struct task_struct *task = bpf_get_current_task_btf();
 
-    struct cr2_stats *cr2stats = bpf_task_storage_get(&pid_cr2, task, 0,
+    struct pf_info_rb *cr2stats = bpf_task_storage_get(&pid_cr2, task, 0,
                                                       BPF_LOCAL_STORAGE_GET_F_CREATE);
     if (cr2stats) {
         cr2stats_push(cr2stats, &stat);
