@@ -20,8 +20,6 @@ typedef __u64 u64;
 typedef __s64 s64;
 #include "sigsegv-monitor.h"
 
-#define MAX_LBR_ENTRIES 32
-
 #define for_each(i, cond) for(int (i)=0; (i) < cond; (i)++)
 #define for_each_cpu(cpu) for_each(cpu, get_nprocs_conf())
 
@@ -83,6 +81,18 @@ const char* signal_to_string(int signal)
     return NULL;
 }
 
+static void print_disasm(const char *name, struct disasm *disasm)
+{
+    if (disasm->err == 0) {
+        printf("\"%s\":\"", name);
+        for (int i = 0; i < DISASM_SIZE; i++)
+            printf("%02x", disasm->opcodes[i]);
+        printf("\",");
+    } else {
+        printf("\"%s\":%lld,", name, (long long)disasm->err);
+    }
+}
+
 void handle_event(void *ctx, int cpu, void *data, __u32 data_sz) {
     struct event_t *e = data;
     const char* signal = signal_to_string(e->signal);
@@ -122,27 +132,23 @@ void handle_event(void *ctx, int cpu, void *data, __u32 data_sz) {
     printf("\"cr2\":\"0x%016llx\"", e->regs.cr2);
     printf("},");
 
-    if (e->ip_snapshot_err == 0) {
-        printf("\"ip_snapshot\":\"");
-        for (int i = 0; i < IP_SNAPSHOT_SIZE; i++)
-            printf("%02x", e->ip_snapshot[i]);
-        printf("\",");
-    } else {
-        printf("\"ip_snapshot\":%lld,", (long long)e->ip_snapshot_err);
-    }
+    print_disasm("ip_snapshot", &e->disasm_ip);
+    print_disasm("last_jmp_snapshot", &e->disasm_last_jmp);
+    if (e->disasm_last_jmp.err == 0)
+        printf("\"last_jmp_offset\":%llu,", e->disasm_last_jmp_offset);
 
-    #ifdef TRACE_PF_CR2
+#ifdef TRACE_PF_CR2
     printf("\"page_faults\": [");
     for_each(i, e->pf_count)
     {
-        printf("{\"cr2\":\"0x%016llx\",\"err\":\"0x%016llx\",\"tai\":%llu}", e->pf[i].cr2, e->pf[i].err, e->pf[i].tai);
+        printf("{\"core\":%llu,\"cr2\":\"0x%016llx\",\"err\":\"0x%016llx\",\"tai\":%llu}", e->pf[i].core, e->pf[i].cr2, e->pf[i].err, e->pf[i].tai);
 
         if (i + 1 != e->pf_count) {
             printf(",");
         }
     }
     printf("],");
-    #endif
+#endif
 
     printf("\"lbr\":[");
     int lbr_limit = (e->lbr_count < MAX_LBR_ENTRIES) ? e->lbr_count : MAX_LBR_ENTRIES;

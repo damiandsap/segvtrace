@@ -17,13 +17,6 @@ struct trace_event_raw_page_fault_user {
     char __data[0];
 };
 
-// Information collected for one Page Fault
-struct pf_info {
-    u64 cr2;
-    u64 err;
-    u64 tai;
-};
-
 // Ring buffer of Page Fault information.
 // NOTE: pf_info_rb must be valid when zero-initialized, since
 // bpf_task_storage_get with BPF_LOCAL_STORAGE_GET_F_CREATE returns
@@ -139,7 +132,6 @@ int trace_signal(struct trace_event_raw_signal_generate *ctx) {
 
     // TODO: how are these regs acquired?
     regs = (struct pt_regs *)bpf_task_pt_regs(task);
-    event->ip_snapshot_err = -1;
     if (regs) {
         event->regs.rip = regs->ip;
         event->regs.rsp = regs->sp;
@@ -161,15 +153,11 @@ int trace_signal(struct trace_event_raw_signal_generate *ctx) {
         event->regs.flags = regs->flags;
 
         event->regs.cr2 = task->thread.cr2;
-
-        event->ip_snapshot_err = bpf_probe_read_user(
-            event->ip_snapshot, IP_SNAPSHOT_SIZE,
-            (void *)(regs->ip - IP_SNAPSHOT_SIZE / 2));
     }
 
     event->pf_count = 0;
 #ifdef TRACE_PF_CR2
-    struct pf_info_rb *cr2stats = bpf_task_storage_get(&pid_cr2, task, 0, 0);
+    struct pf_info_rb *cr2stats = bpf_task_storage_get(&pid_cr2, task, NULL, 0);
 
     if (cr2stats) {
         /* If we use a u32 for i, the verifier loses track of its value and rejects the program:
@@ -185,12 +173,9 @@ int trace_signal(struct trace_event_raw_signal_generate *ctx) {
          * R5 unbounded memory access, make sure to bounds check any such access
          */
         for (u64 i = 0; i < cr2stats->count && i < MAX_USER_PF_ENTRIES; i++) {
-            struct cr2_stat* stat = cr2stats_get(cr2stats, i);
+            struct pf_info* stat = cr2stats_get(cr2stats, i);
             if (stat) {
-                event->pf[i].cr2 = stat->cr2;
-                event->pf[i].err = stat->err;
-                event->pf[i].tai = stat->tai;
-
+                event->pf[i] = *stat;
                 ++event->pf_count;
             }
         }
@@ -209,6 +194,23 @@ int trace_signal(struct trace_event_raw_signal_generate *ctx) {
         // on VMs, LBR might not be available
         event->lbr_count = 0;
     }
+
+    event->disasm_last_jmp.err = -1;
+    if (event->lbr_count > 0) {
+        // store the offset of the instr. inside the opcodes
+        u64 start_addr = event->lbr[0].to;
+        u64 opcodes_size = event->regs.rip - event->lbr[0].to;
+
+        if (opcodes_size > DISASM_SIZE)
+            start_addr = event->regs.rip - DISASM_PROLOGUE_SIZE;
+
+        event->disasm_last_jmp_offset = opcodes_size;
+        event->disasm_last_jmp.err = bpf_probe_read_user(event->disasm_last_jmp.opcodes, DISASM_SIZE, (void*)start_addr);
+    }
+
+    u64 start_addr = event->regs.rip - DISASM_PROLOGUE_SIZE;
+    event->disasm_ip.err = bpf_probe_read_user(event->disasm_ip.opcodes, DISASM_SIZE, (void*)start_addr);
+
     // BPF_F_CURRENT_CPU -> "index of current core should be used"
     bpf_perf_event_output(ctx, &events, BPF_F_CURRENT_CPU, event, sizeof(*event));
 
@@ -219,14 +221,14 @@ int trace_signal(struct trace_event_raw_signal_generate *ctx) {
 SEC("tracepoint/exceptions/page_fault_user")
 int trace_page_fault(struct trace_event_raw_page_fault_user *ctx) {
     struct pf_info stat = {
+        .core = bpf_get_smp_processor_id(),
         .cr2 = ctx->address,
         .err = ctx->error_code,
         .tai = bpf_ktime_get_tai_ns()
     };
     struct task_struct *task = bpf_get_current_task_btf();
 
-    struct pf_info_rb *cr2stats = bpf_task_storage_get(&pid_cr2, task, 0,
-                                                      BPF_LOCAL_STORAGE_GET_F_CREATE);
+    struct pf_info_rb *cr2stats = bpf_task_storage_get(&pid_cr2, task, 0, BPF_LOCAL_STORAGE_GET_F_CREATE);
     if (cr2stats) {
         cr2stats_push(cr2stats, &stat);
     }

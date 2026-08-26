@@ -2,13 +2,15 @@
 
 #define MAX_LBR_ENTRIES 32
 #define MAX_USER_PF_ENTRIES 16
-#define IP_SNAPSHOT_SIZE 32
+#define DISASM_SIZE 64
+#define DISASM_PROLOGUE_SIZE 42
 
 #define TRACE_PF_CR2
 // #define TRACE_PF_CR2_INCREMENTAL
 // #define TRACE_KERNEL_SPACE_BRANCHES
 
-struct page_fault_info_t {
+struct pf_info {
+    u64 core;
     u64 cr2;
     u64 err;
     u64 tai;
@@ -38,6 +40,11 @@ struct user_regs_t {
     u64 cr2;
 };
 
+struct disasm {
+    u8 opcodes[DISASM_SIZE];
+    s64 err;  // 0 = success, negative = bpf_probe_read_user error
+};
+
 // WARNING: this is for the SENDING process (e.g. pid) of the signal!
 struct event_t {
     int signal;
@@ -58,8 +65,9 @@ struct event_t {
     u64 tai; // time atomic international
 
     u32 pf_count;
-    struct page_fault_info_t pf[MAX_USER_PF_ENTRIES];
+    struct pf_info pf[MAX_USER_PF_ENTRIES];
 
-    u8 ip_snapshot[IP_SNAPSHOT_SIZE];
-    s64 ip_snapshot_err;  // 0 = success, negative = bpf_probe_read_user error
+    struct disasm disasm_ip;
+    struct disasm disasm_last_jmp;
+    u64 disasm_last_jmp_offset;
 };
