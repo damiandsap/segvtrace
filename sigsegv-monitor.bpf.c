@@ -3,6 +3,7 @@
 #include <bpf/bpf_core_read.h>
 #include <bpf/bpf_tracing.h>
 #include "sigsegv-monitor.h"
+#include "ringbuf.h"
 
 // if /sys/kernel/tracing/trace_on  is set to 1,
 //   cat /sys/kernel/tracing/trace
@@ -21,11 +22,7 @@ struct trace_event_raw_page_fault_user {
 // NOTE: pf_info_rb must be valid when zero-initialized, since
 // bpf_task_storage_get with BPF_LOCAL_STORAGE_GET_F_CREATE returns
 // a zero-filled struct on first access.
-struct pf_info_rb {
-    struct pf_info stat[MAX_USER_PF_ENTRIES];
-    u64 head;
-    u64 count;
-};
+DEFINE_RING_BUFFER(pf_info_rb, pf_info, MAX_USER_PF_ENTRIES);
 
 struct {
     __uint(type, BPF_MAP_TYPE_TASK_STORAGE);
@@ -33,32 +30,18 @@ struct {
     __type(key, int);
     __type(value, struct pf_info_rb);
 } pid_cr2 SEC(".maps");
+#endif
 
-inline void cr2stats_push(struct pf_info_rb* stats, struct pf_info* value) {
-    if (stats->head < MAX_USER_PF_ENTRIES) {
-        stats->stat[stats->head] = *value;
+#ifdef TRACE_CPU_MIGRATIONS
+// Ring buffer of CPU Migration information.
+DEFINE_RING_BUFFER(cpu_migration_info_rb, cpu_migration_info, MAX_CPU_MIGRATION_ENTRIES);
 
-        if (++stats->head == MAX_USER_PF_ENTRIES) {
-            stats->head = 0;
-        }
-
-        if (stats->count < MAX_USER_PF_ENTRIES) {
-            ++stats->count;
-        }
-    }
-}
-
-// The `index` parameter here is not an index in the array, but an index in the ring buffer,
-// i.e. passing an index 0 would return the oldest element in the ring buffer.
-inline struct pf_info* cr2stats_get(struct pf_info_rb* stats, u64 index) {
-    if (stats->count == MAX_USER_PF_ENTRIES) {
-        index += stats->head; // this makes index unbounded to the verifier
-    }
-
-    // establish bound for index; also helps if above index += ... needs to wrap around
-    index %= MAX_USER_PF_ENTRIES;
-    return stats->stat + index;
-}
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, 10*1024);
+    __type(key, pid_t);
+    __type(value, struct cpu_migration_info_rb);
+} pid_cpu_migr SEC(".maps");
 #endif
 
 // Output map (for user space)
@@ -181,16 +164,28 @@ int trace_signal(struct trace_event_raw_signal_generate *ctx) {
          * R5 unbounded memory access, make sure to bounds check any such access
          */
         for (u64 i = 0; i < cr2stats->count && i < MAX_USER_PF_ENTRIES; i++) {
-            struct pf_info* stat = cr2stats_get(cr2stats, i);
+            struct pf_info* stat = pf_info_rb_get(cr2stats, i);
             if (stat) {
                 event->pf[i] = *stat;
                 ++event->pf_count;
             }
         }
-
-#ifdef TRACE_PF_CR2_INCREMENTAL
-        bpf_task_storage_delete(&pid_cr2, task);
+    }
 #endif
+
+    event->migration_count = 0;
+#ifdef TRACE_CPU_MIGRATIONS
+    pid_t pid = task->pid;
+    struct cpu_migration_info_rb *cpu_migr_stats = bpf_map_lookup_elem(&pid_cpu_migr, &pid);
+
+    if (cpu_migr_stats) {
+        for (u64 i = 0; i < cpu_migr_stats->count && i < MAX_CPU_MIGRATION_ENTRIES; i++) {
+            struct cpu_migration_info* stat = cpu_migration_info_rb_get(cpu_migr_stats, i);
+            if (stat) {
+                event->migration[i] = *stat;
+                ++event->migration_count;
+            }
+        }
     }
 #endif
 
@@ -236,12 +231,35 @@ int trace_page_fault(struct trace_event_raw_page_fault_user *ctx) {
 
     struct pf_info_rb *cr2stats = bpf_task_storage_get(&pid_cr2, task, 0, BPF_LOCAL_STORAGE_GET_F_CREATE);
     if (cr2stats) {
-        cr2stats_push(cr2stats, &stat);
+        pf_info_rb_push(cr2stats, &stat);
     }
 
     return 0;
 }
+#endif
 
+#ifdef TRACE_CPU_MIGRATIONS
+SEC("tracepoint/sched/sched_migrate_task")
+int handle_migrate(struct trace_event_raw_sched_migrate_task *ctx)
+{
+    struct cpu_migration_info stat;
+    stat.from = ctx->orig_cpu;
+    stat.to = ctx->dest_cpu;
+    stat.tai = bpf_ktime_get_tai_ns();
+
+    pid_t pid = ctx->pid;
+
+    struct cpu_migration_info_rb *cpu_migr_stats = bpf_map_lookup_elem(&pid_cpu_migr, &pid);
+    if (cpu_migr_stats) {
+        cpu_migration_info_rb_push(cpu_migr_stats, &stat);
+    } else {
+        struct cpu_migration_info_rb new_stats = { 0 };
+        cpu_migration_info_rb_push(&new_stats, &stat);
+        bpf_map_update_elem(&pid_cpu_migr, &pid, &new_stats, BPF_ANY);
+    }
+
+    return 0;
+}
 #endif
 
 char LICENSE[] SEC("license") = "GPL";

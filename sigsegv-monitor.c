@@ -23,7 +23,11 @@ typedef __s64 s64;
 #define for_each(i, cond) for(int (i)=0; (i) < cond; (i)++)
 #define for_each_cpu(cpu) for_each(cpu, get_nprocs_conf())
 
-#ifdef TRACE_PF_CR2
+#if defined(TRACE_PF_CR2) || defined(TRACE_CPU_MIGRATIONS)
+#define NEEDS_CPU_TOPOLOGY
+#endif
+
+#ifdef NEEDS_CPU_TOPOLOGY
 struct cpu_topology {
     int *cpu_core_ids;
     int *cpu_package_ids;
@@ -237,6 +241,7 @@ void handle_event(void *ctx, int cpu, void *data, __u32 data_sz) {
     const char* signal = signal_to_string(e->signal);
 
     printf("{\"version\":{\"rev\":\"%s\",\"date\":\"%s\"},", GIT_REV, GIT_DATE);
+    printf("\"event_type\":\"signal\",");
     printf("\"cpu\":%d,", cpu);
     printf("\"tai\":%llu,", e->tai);
     printf("\"process\":{\"rootns_pid\":%d,\"ns_pid\":%d,\"comm\":\"%s\"},", e->tgid, e->pidns_tgid, e->tgleader_comm);
@@ -279,14 +284,34 @@ void handle_event(void *ctx, int cpu, void *data, __u32 data_sz) {
     printf("\"page_faults\": [");
     for_each(i, e->pf_count)
     {
-        int physical_core = get_physical_core(&cpu_topology, e->pf[i].cpu);
+        int core = get_physical_core(&cpu_topology, e->pf[i].cpu);
         int package = get_package(&cpu_topology, e->pf[i].cpu);
 
-        printf("{\"ip\":\"0x%016llx\",\"logical_cpu\":%u,\"physical_core\":%d,\"package\":%d,\"cr2\":\"0x%016llx\",\"err\":\"0x%016llx\",\"tai\":%llu,",
-                e->pf[i].ip, e->pf[i].cpu, physical_core, package, e->pf[i].cr2, e->pf[i].err, e->pf[i].tai);
+        printf("{\"ip\":\"0x%016llx\",\"cpu\":%u,\"core\":%d,\"package\":%d,\"cr2\":\"0x%016llx\",\"err\":\"0x%016llx\",\"tai\":%llu,",
+                e->pf[i].ip, e->pf[i].cpu, core, package, e->pf[i].cr2, e->pf[i].err, e->pf[i].tai);
         print_opcodes("ip_snapshot", &e->pf[i].opcodes_ip, '}');
 
         if (i + 1 != e->pf_count) {
+            printf(",");
+        }
+    }
+    printf("],");
+#endif
+
+#ifdef TRACE_CPU_MIGRATIONS
+    printf("\"cpu_migrations\": [");
+    for_each(i, e->migration_count)
+    {
+        int from_core = get_physical_core(&cpu_topology, e->migration[i].from);
+        int from_package = get_package(&cpu_topology, e->migration[i].from);
+
+        int to_core = get_physical_core(&cpu_topology, e->migration[i].to);
+        int to_package = get_package(&cpu_topology, e->migration[i].to);
+
+        printf("{\"from_cpu\":%d,\"to_cpu\":%d,\"from_core\":%d,\"to_core\":%d,\"from_package\":%d,\"to_package\":%d,\"tai\":%llu}",
+                e->migration[i].from, e->migration[i].to, from_core, to_core, from_package, to_package, e->pf[i].tai);
+
+        if (i + 1 != e->migration_count) {
             printf(",");
         }
     }
@@ -309,6 +334,14 @@ void handle_event(void *ctx, int cpu, void *data, __u32 data_sz) {
     fflush(stdout);
 }
 
+
+void handle_lost_event(void *ctx, int cpu, __u64 cnt)
+{
+    fprintf(stderr, "Lost %llu events on CPU %d\n", cnt, cpu);
+
+    fflush(stderr);
+}
+
 void sigint_handler(int dummy) {
     running = 0;
 }
@@ -322,7 +355,7 @@ void clean() {
 
     free(cpus_fd);
 
-#ifdef TRACE_PF_CR2
+#ifdef NEEDS_CPU_TOPOLOGY
     free_cpu_topology(&cpu_topology);
 #endif
 }
@@ -345,7 +378,7 @@ int main(int argc, char *argv[]) {
     // Stop running if CTRL+C is entered
     signal(SIGINT, sigint_handler);
 
-#ifdef TRACE_PF_CR2
+#ifdef NEEDS_CPU_TOPOLOGY
     init_cpu_topology(&cpu_topology);
 #endif
 
@@ -358,7 +391,7 @@ int main(int argc, char *argv[]) {
     if (sigsegv_monitor_bpf__load(skel)) return 1;
     if (sigsegv_monitor_bpf__attach(skel)) return 1;
 
-    pb = perf_buffer__new(bpf_map__fd(skel->maps.events), 8, handle_event, NULL, NULL, NULL);
+    pb = perf_buffer__new(bpf_map__fd(skel->maps.events), 8, handle_event, handle_lost_event, NULL, NULL);
     if (!pb) return 1;
 
     fprintf(stderr, "[*] Monitoring for SIGSEGV... (Ctrl+C to stop)\n");

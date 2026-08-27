@@ -2,12 +2,13 @@
 
 #define MAX_LBR_ENTRIES 32
 #define MAX_USER_PF_ENTRIES 16
+#define MAX_CPU_MIGRATION_ENTRIES 16
 
 #define OPCODES_SIZE 64
 #define OPCODES_PROLOGUE_SIZE 42
 
 #define TRACE_PF_CR2
-// #define TRACE_PF_CR2_INCREMENTAL
+#define TRACE_CPU_MIGRATIONS
 // #define TRACE_KERNEL_SPACE_BRANCHES
 
 struct opcode_list {
@@ -23,6 +24,12 @@ struct pf_info {
     u64 ip;
 
     struct opcode_list opcodes_ip;
+};
+
+struct cpu_migration_info {
+    int from;
+    int to;
+    u64 tai; // time atomic international
 };
 
 struct user_regs_t {
@@ -69,7 +76,10 @@ struct event_t {
     u64 tai; // time atomic international
 
     u32 pf_count;
+    u32 migration_count;
+
     struct pf_info pf[MAX_USER_PF_ENTRIES];
+    struct cpu_migration_info migration[MAX_CPU_MIGRATION_ENTRIES];
 
     struct opcode_list opcodes_ip;
     struct opcode_list opcodes_last_jmp_source;
