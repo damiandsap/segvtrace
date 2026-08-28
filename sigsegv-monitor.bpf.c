@@ -83,6 +83,14 @@ inline void split_2u32(u64 in, u32* lower, u32* upper)
     *upper = (u32)(in >> 32);
 }
 
+static void get_opcodes(u64 addr, struct opcode_list *list)
+{
+    for (u32 i = 0; i < OPCODES_SIZE; i++)
+        list->opcodes[i] = 0;
+
+   list->err = bpf_probe_read_user(list->opcodes, OPCODES_SIZE, (void*)addr);
+}
+
 SEC("tracepoint/signal/signal_generate")
 int trace_signal(struct trace_event_raw_signal_generate *ctx) {
     struct task_struct *task = NULL;
@@ -195,21 +203,14 @@ int trace_signal(struct trace_event_raw_signal_generate *ctx) {
         event->lbr_count = 0;
     }
 
-    event->disasm_last_jmp.err = -1;
+    event->opcodes_last_jmp_source.err = 1;
+    event->opcodes_last_jmp_target.err = 1;
     if (event->lbr_count > 0) {
-        // store the offset of the instr. inside the opcodes
-        u64 start_addr = event->lbr[0].to;
-        u64 opcodes_size = event->regs.rip - event->lbr[0].to;
+        get_opcodes(event->lbr[0].from, &event->opcodes_last_jmp_source);
+        get_opcodes(event->lbr[0].to, &event->opcodes_last_jmp_target);
+    } 
 
-        if (opcodes_size > DISASM_SIZE)
-            start_addr = event->regs.rip - DISASM_PROLOGUE_SIZE;
-
-        event->disasm_last_jmp_offset = opcodes_size;
-        event->disasm_last_jmp.err = bpf_probe_read_user(event->disasm_last_jmp.opcodes, DISASM_SIZE, (void*)start_addr);
-    }
-
-    u64 start_addr = event->regs.rip - DISASM_PROLOGUE_SIZE;
-    event->disasm_ip.err = bpf_probe_read_user(event->disasm_ip.opcodes, DISASM_SIZE, (void*)start_addr);
+    get_opcodes(event->regs.rip - OPCODES_PROLOGUE_SIZE, &event->opcodes_ip);
 
     // BPF_F_CURRENT_CPU -> "index of current core should be used"
     bpf_perf_event_output(ctx, &events, BPF_F_CURRENT_CPU, event, sizeof(*event));
@@ -221,7 +222,7 @@ int trace_signal(struct trace_event_raw_signal_generate *ctx) {
 SEC("tracepoint/exceptions/page_fault_user")
 int trace_page_fault(struct trace_event_raw_page_fault_user *ctx) {
     struct pf_info stat = {
-        .core = bpf_get_smp_processor_id(),
+        .cpu = bpf_get_smp_processor_id(),
         .cr2 = ctx->address,
         .err = ctx->error_code,
         .tai = bpf_ktime_get_tai_ns()

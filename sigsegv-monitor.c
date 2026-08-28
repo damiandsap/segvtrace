@@ -81,16 +81,59 @@ const char* signal_to_string(int signal)
     return NULL;
 }
 
-static void print_disasm(const char *name, struct disasm *disasm)
+static void print_opcodes(const char *name, const char *error_name, struct opcode_list *list)
 {
-    if (disasm->err == 0) {
+    printf("\"%s\":%lld,", error_name, (long long)list->err);
+    if (list->err != 1) {
         printf("\"%s\":\"", name);
-        for (int i = 0; i < DISASM_SIZE; i++)
-            printf("%02x", disasm->opcodes[i]);
+        for (int i = 0; i < OPCODES_SIZE; i++)
+            printf("%02x", list->opcodes[i]);
         printf("\",");
-    } else {
-        printf("\"%s\":%lld,", name, (long long)disasm->err);
     }
+}
+
+static int get_physical_core(int logical_cpu)
+{
+    char path[256];
+    FILE *fp;
+    int core_id;
+
+    snprintf(path, sizeof(path),
+            "/sys/devices/system/cpu/cpu%d/topology/core_id",
+            logical_cpu);
+
+    fp = fopen(path, "r");
+    if (!fp) {
+        printf("\n\n\n%d\n\n\n", errno);
+        return -1;
+    }
+
+    if (fscanf(fp, "%d", &core_id) != 1)
+        core_id = -1;
+
+    fclose(fp);
+    return core_id;
+}
+
+static int get_package(int logical_cpu)
+{
+    char path[256];
+    FILE *fp;
+    int package_id;
+
+    snprintf(path, sizeof(path),
+            "/sys/devices/system/cpu/cpu%d/topology/physical_package_id",
+            logical_cpu);
+
+    fp = fopen(path, "r");
+    if (!fp)
+        return -1;
+
+    if (fscanf(fp, "%d", &package_id) != 1)
+        package_id = -1;
+
+    fclose(fp);
+    return package_id;
 }
 
 void handle_event(void *ctx, int cpu, void *data, __u32 data_sz) {
@@ -132,16 +175,19 @@ void handle_event(void *ctx, int cpu, void *data, __u32 data_sz) {
     printf("\"cr2\":\"0x%016llx\"", e->regs.cr2);
     printf("},");
 
-    print_disasm("ip_snapshot", &e->disasm_ip);
-    print_disasm("last_jmp_snapshot", &e->disasm_last_jmp);
-    if (e->disasm_last_jmp.err == 0)
-        printf("\"last_jmp_offset\":%llu,", e->disasm_last_jmp_offset);
+    print_opcodes("ip_snapshot", "ip_snapshot_err", &e->opcodes_ip);
+    print_opcodes("last_jmp_source_snapshot", "last_jmp_source_snapshot_err", &e->opcodes_last_jmp_source);
+    print_opcodes("last_jmp_target_snapshot", "last_jmp_target_snapshot_err", &e->opcodes_last_jmp_target);
 
 #ifdef TRACE_PF_CR2
     printf("\"page_faults\": [");
     for_each(i, e->pf_count)
     {
-        printf("{\"core\":%llu,\"cr2\":\"0x%016llx\",\"err\":\"0x%016llx\",\"tai\":%llu}", e->pf[i].core, e->pf[i].cr2, e->pf[i].err, e->pf[i].tai);
+        int physical_core = get_physical_core(e->pf[i].cpu);
+        int package = get_package(e->pf[i].cpu);
+
+        printf("{\"logical_cpu\":%u,\"physical_core\":%d,\"package\":%d,\"cr2\":\"0x%016llx\",\"err\":\"0x%016llx\",\"tai\":%llu}",
+                e->pf[i].cpu, physical_core, package, e->pf[i].cr2, e->pf[i].err, e->pf[i].tai);
 
         if (i + 1 != e->pf_count) {
             printf(",");
