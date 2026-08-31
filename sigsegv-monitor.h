@@ -10,11 +10,19 @@
 // #define TRACE_PF_CR2_INCREMENTAL
 // #define TRACE_KERNEL_SPACE_BRANCHES
 
+struct opcode_list {
+    u8 opcodes[OPCODES_SIZE];
+    s64 err;  // 0 = success, 1 = skipped on purpose, negative = bpf_probe_read_user error
+};
+
 struct pf_info {
     u32 cpu;
     u64 cr2;
     u64 err;
     u64 tai;
+    u64 ip;
+
+    struct opcode_list opcodes_ip;
 };
 
 struct user_regs_t {
@@ -39,11 +47,6 @@ struct user_regs_t {
     u64 trapno;
     u64 err;
     u64 cr2;
-};
-
-struct opcode_list {
-    u8 opcodes[OPCODES_SIZE];
-    s64 err;  // 0 = success, 1 = skipped on purpose, negative = bpf_probe_read_user error
 };
 
 // WARNING: this is for the SENDING process (e.g. pid) of the signal!

@@ -83,12 +83,12 @@ inline void split_2u32(u64 in, u32* lower, u32* upper)
     *upper = (u32)(in >> 32);
 }
 
-static void get_opcodes(u64 addr, struct opcode_list *list)
+static void get_opcodes(void *addr, struct opcode_list *list)
 {
     for (u32 i = 0; i < OPCODES_SIZE; i++)
         list->opcodes[i] = 0;
 
-   list->err = bpf_probe_read_user(list->opcodes, OPCODES_SIZE, (void*)addr);
+   list->err = bpf_probe_read_user(list->opcodes, OPCODES_SIZE, addr);
 }
 
 SEC("tracepoint/signal/signal_generate")
@@ -206,11 +206,11 @@ int trace_signal(struct trace_event_raw_signal_generate *ctx) {
     event->opcodes_last_jmp_source.err = 1;
     event->opcodes_last_jmp_target.err = 1;
     if (event->lbr_count > 0) {
-        get_opcodes(event->lbr[0].from, &event->opcodes_last_jmp_source);
-        get_opcodes(event->lbr[0].to, &event->opcodes_last_jmp_target);
+        get_opcodes((void*)event->lbr[0].from, &event->opcodes_last_jmp_source);
+        get_opcodes((void*)event->lbr[0].to, &event->opcodes_last_jmp_target);
     } 
 
-    get_opcodes(event->regs.rip - OPCODES_PROLOGUE_SIZE, &event->opcodes_ip);
+    get_opcodes((void*)(event->regs.rip - OPCODES_PROLOGUE_SIZE), &event->opcodes_ip);
 
     // BPF_F_CURRENT_CPU -> "index of current core should be used"
     bpf_perf_event_output(ctx, &events, BPF_F_CURRENT_CPU, event, sizeof(*event));
@@ -221,12 +221,14 @@ int trace_signal(struct trace_event_raw_signal_generate *ctx) {
 #ifdef TRACE_PF_CR2
 SEC("tracepoint/exceptions/page_fault_user")
 int trace_page_fault(struct trace_event_raw_page_fault_user *ctx) {
-    struct pf_info stat = {
-        .cpu = bpf_get_smp_processor_id(),
-        .cr2 = ctx->address,
-        .err = ctx->error_code,
-        .tai = bpf_ktime_get_tai_ns()
-    };
+    struct pf_info stat;
+    stat.cpu = bpf_get_smp_processor_id();
+    stat.cr2 = ctx->address;
+    stat.ip = ctx->ip;
+    stat.err = ctx->error_code;
+    stat.tai = bpf_ktime_get_tai_ns();
+    get_opcodes((void*)(ctx->ip - OPCODES_PROLOGUE_SIZE), &stat.opcodes_ip);
+
     struct task_struct *task = bpf_get_current_task_btf();
 
     struct pf_info_rb *cr2stats = bpf_task_storage_get(&pid_cr2, task, 0, BPF_LOCAL_STORAGE_GET_F_CREATE);

@@ -90,7 +90,7 @@ const char* signal_to_string(int signal)
     return NULL;
 }
 
-static void print_opcodes(const char *name, struct opcode_list *list)
+static void print_opcodes(const char *name, struct opcode_list *list, char suffix)
 {
     printf("\"%s\":{\"err\":%lld,\"opcodes\":", name, list->err);
     if (list->err != 1) {
@@ -103,7 +103,8 @@ static void print_opcodes(const char *name, struct opcode_list *list)
     {
         printf("null");
     }
-    printf("},");
+
+    printf("}%c", suffix);
 }
 
 static int read_physical_core(int logical_cpu)
@@ -268,9 +269,9 @@ void handle_event(void *ctx, int cpu, void *data, __u32 data_sz) {
     printf("\"cr2\":\"0x%016llx\"", e->regs.cr2);
     printf("},");
 
-    print_opcodes("ip_snapshot", &e->opcodes_ip);
-    print_opcodes("last_jmp_source_snapshot", &e->opcodes_last_jmp_source);
-    print_opcodes("last_jmp_target_snapshot", &e->opcodes_last_jmp_target);
+    print_opcodes("ip_snapshot", &e->opcodes_ip, ',');
+    print_opcodes("last_jmp_source_snapshot", &e->opcodes_last_jmp_source, ',');
+    print_opcodes("last_jmp_target_snapshot", &e->opcodes_last_jmp_target, ',');
 
 #ifdef TRACE_PF_CR2
     printf("\"page_faults\": [");
@@ -279,8 +280,9 @@ void handle_event(void *ctx, int cpu, void *data, __u32 data_sz) {
         int physical_core = get_physical_core(&cpu_topology, e->pf[i].cpu);
         int package = get_package(&cpu_topology, e->pf[i].cpu);
 
-        printf("{\"logical_cpu\":%u,\"physical_core\":%d,\"package\":%d,\"cr2\":\"0x%016llx\",\"err\":\"0x%016llx\",\"tai\":%llu}",
-                e->pf[i].cpu, physical_core, package, e->pf[i].cr2, e->pf[i].err, e->pf[i].tai);
+        printf("{\"ip\":\"0x%016llx\",\"logical_cpu\":%u,\"physical_core\":%d,\"package\":%d,\"cr2\":\"0x%016llx\",\"err\":\"0x%016llx\",\"tai\":%llu,",
+                e->pf[i].ip, e->pf[i].cpu, physical_core, package, e->pf[i].cr2, e->pf[i].err, e->pf[i].tai);
+        print_opcodes("ip_snapshot", &e->pf[i].opcodes_ip, '}');
 
         if (i + 1 != e->pf_count) {
             printf(",");
