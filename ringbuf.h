@@ -1,13 +1,13 @@
 #pragma once
 
-#define DEFINE_RING_BUFFER(name, struct_type, capacity) \
+#define DEFINE_RING_BUFFER(name, data_type, capacity) \
     struct name { \
-        struct struct_type data[capacity]; \
+        data_type data[capacity]; \
         u64 head; \
         u64 count; \
     }; \
     \
-    static inline void name##_push(struct name* rb, struct struct_type* value) \
+    static inline void name##_push(struct name* rb, data_type* value) \
     { \
         if (rb->head < capacity) { \
             rb->data[rb->head] = *value; \
@@ -23,7 +23,7 @@
     } \
     \
     /* i.e. passing an index 0 would return the oldest element in the ring buffer. */ \
-    static inline struct struct_type* name##_get(struct name* rb, u64 index) { \
+    static inline data_type* name##_get(struct name* rb, u64 index) { \
         if (rb->count == capacity) { \
             index += rb->head; /* this makes index unbounded to the verifier */ \
         } \

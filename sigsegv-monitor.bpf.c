@@ -22,7 +22,7 @@ struct trace_event_raw_page_fault_user {
 // NOTE: pf_info_rb must be valid when zero-initialized, since
 // bpf_task_storage_get with BPF_LOCAL_STORAGE_GET_F_CREATE returns
 // a zero-filled struct on first access.
-DEFINE_RING_BUFFER(pf_info_rb, pf_info, MAX_USER_PF_ENTRIES);
+DEFINE_RING_BUFFER(pf_info_rb, struct pf_info, MAX_USER_PF_ENTRIES);
 
 struct {
     __uint(type, BPF_MAP_TYPE_TASK_STORAGE);
@@ -34,7 +34,7 @@ struct {
 
 #ifdef TRACE_CPU_MIGRATIONS
 // Ring buffer of CPU Migration information.
-DEFINE_RING_BUFFER(cpu_migration_info_rb, cpu_migration_info, MAX_CPU_MIGRATION_ENTRIES);
+DEFINE_RING_BUFFER(cpu_migration_info_rb, struct cpu_migration_info, MAX_CPU_MIGRATION_ENTRIES);
 
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
