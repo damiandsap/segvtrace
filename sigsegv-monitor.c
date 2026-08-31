@@ -81,15 +81,20 @@ const char* signal_to_string(int signal)
     return NULL;
 }
 
-static void print_opcodes(const char *name, const char *error_name, struct opcode_list *list)
+static void print_opcodes(const char *name, struct opcode_list *list)
 {
-    printf("\"%s\":%lld,", error_name, (long long)list->err);
+    printf("\"%s\":{\"err\":%lld,\"opcodes\":", name, list->err);
     if (list->err != 1) {
-        printf("\"%s\":\"", name);
+        printf("\"");
         for (int i = 0; i < OPCODES_SIZE; i++)
             printf("%02x", list->opcodes[i]);
-        printf("\",");
+        printf("\"");
     }
+    else
+    {
+        printf("null");
+    }
+    printf("},");
 }
 
 static int get_physical_core(int logical_cpu)
@@ -175,9 +180,9 @@ void handle_event(void *ctx, int cpu, void *data, __u32 data_sz) {
     printf("\"cr2\":\"0x%016llx\"", e->regs.cr2);
     printf("},");
 
-    print_opcodes("ip_snapshot", "ip_snapshot_err", &e->opcodes_ip);
-    print_opcodes("last_jmp_source_snapshot", "last_jmp_source_snapshot_err", &e->opcodes_last_jmp_source);
-    print_opcodes("last_jmp_target_snapshot", "last_jmp_target_snapshot_err", &e->opcodes_last_jmp_target);
+    print_opcodes("ip_snapshot", &e->opcodes_ip);
+    print_opcodes("last_jmp_source_snapshot", &e->opcodes_last_jmp_source);
+    print_opcodes("last_jmp_target_snapshot", &e->opcodes_last_jmp_target);
 
 #ifdef TRACE_PF_CR2
     printf("\"page_faults\": [");
