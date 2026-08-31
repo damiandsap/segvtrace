@@ -23,6 +23,15 @@ typedef __s64 s64;
 #define for_each(i, cond) for(int (i)=0; (i) < cond; (i)++)
 #define for_each_cpu(cpu) for_each(cpu, get_nprocs_conf())
 
+#ifdef TRACE_PF_CR2
+struct cpu_topology {
+    int *cpu_core_ids;
+    int *cpu_package_ids;
+    int num_cpus;
+};
+static struct cpu_topology cpu_topology;
+#endif
+
 static volatile sig_atomic_t running = 1;
 
 // perf_event_open fd for every CPUs
@@ -97,7 +106,7 @@ static void print_opcodes(const char *name, struct opcode_list *list)
     printf("},");
 }
 
-static int get_physical_core(int logical_cpu)
+static int read_physical_core(int logical_cpu)
 {
     char path[256];
     FILE *fp;
@@ -120,7 +129,7 @@ static int get_physical_core(int logical_cpu)
     return core_id;
 }
 
-static int get_package(int logical_cpu)
+static int read_package(int logical_cpu)
 {
     char path[256];
     FILE *fp;
@@ -139,6 +148,85 @@ static int get_package(int logical_cpu)
 
     fclose(fp);
     return package_id;
+}
+
+static int init_cpu_topology(struct cpu_topology *topology)
+{
+    topology->num_cpus = (int)sysconf(_SC_NPROCESSORS_CONF);
+    if (topology->num_cpus <= 0)
+        return -1;
+
+    topology->cpu_core_ids = calloc(topology->num_cpus, sizeof(*topology->cpu_core_ids));
+    topology->cpu_package_ids = calloc(topology->num_cpus, sizeof(*topology->cpu_package_ids));
+
+    if (!topology->cpu_core_ids || !topology->cpu_package_ids) {
+        free(topology->cpu_core_ids);
+        free(topology->cpu_package_ids);
+        topology->cpu_core_ids = NULL;
+        topology->cpu_package_ids = NULL;
+        return -1;
+    }
+
+    for (int cpu = 0; cpu < topology->num_cpus; cpu++) {
+        topology->cpu_core_ids[cpu] = read_physical_core(cpu);
+        topology->cpu_package_ids[cpu] = read_package(cpu);
+
+        if (topology->cpu_core_ids[cpu] < 0 || topology->cpu_package_ids[cpu] < 0) {
+            fprintf(stderr,
+                    "Failed to read CPU topology for CPU %d: "
+                    "core=%d package=%d errno=%d\n",
+                    cpu,
+                    topology->cpu_core_ids[cpu],
+                    topology->cpu_package_ids[cpu],
+                    errno);
+
+            free(topology->cpu_core_ids);
+            free(topology->cpu_package_ids);
+            topology->cpu_core_ids = NULL;
+            topology->cpu_package_ids = NULL;
+            return -1;
+        }
+    }
+
+    return 0;
+}
+
+static void free_cpu_topology(struct cpu_topology *topology)
+{
+    free(topology->cpu_core_ids);
+    free(topology->cpu_package_ids);
+    topology->cpu_core_ids = NULL;
+    topology->cpu_package_ids = NULL;
+}
+
+static int get_physical_core(struct cpu_topology *topology, int logical_cpu)
+{
+    if (logical_cpu > 0) {
+        if (logical_cpu < topology->num_cpus) {
+            return topology->cpu_core_ids[logical_cpu];
+        } else {
+            fprintf(stderr, "WARNING: CPU %d does not exist in topology cache. Attempting to read core id from system: ", logical_cpu);
+            return read_physical_core(logical_cpu);
+        }
+    } else {
+        fprintf(stderr, "WARNING: %d is an invalid CPU id", logical_cpu);
+        return -1;
+    }
+}
+
+static int get_package(struct cpu_topology *topology, int logical_cpu)
+{
+    if (logical_cpu > 0) {
+        if (logical_cpu < topology->num_cpus) {
+            return topology->cpu_package_ids[logical_cpu];
+        } else {
+            fprintf(stderr, "WARNING: CPU %d does not exist in topology cache. Attempting to read package id from system: ", logical_cpu);
+            return read_package(logical_cpu);
+        }
+    } else {
+        fprintf(stderr, "WARNING: %d is an invalid CPU id", logical_cpu);
+        return -1;
+    }
 }
 
 void handle_event(void *ctx, int cpu, void *data, __u32 data_sz) {
@@ -188,8 +276,8 @@ void handle_event(void *ctx, int cpu, void *data, __u32 data_sz) {
     printf("\"page_faults\": [");
     for_each(i, e->pf_count)
     {
-        int physical_core = get_physical_core(e->pf[i].cpu);
-        int package = get_package(e->pf[i].cpu);
+        int physical_core = get_physical_core(&cpu_topology, e->pf[i].cpu);
+        int package = get_package(&cpu_topology, e->pf[i].cpu);
 
         printf("{\"logical_cpu\":%u,\"physical_core\":%d,\"package\":%d,\"cr2\":\"0x%016llx\",\"err\":\"0x%016llx\",\"tai\":%llu}",
                 e->pf[i].cpu, physical_core, package, e->pf[i].cr2, e->pf[i].err, e->pf[i].tai);
@@ -229,6 +317,10 @@ void clean() {
     }
 
     free(cpus_fd);
+
+#ifdef TRACE_PF_CR2
+    free_cpu_topology(&cpu_topology);
+#endif
 }
 
 void print_version(char const* prefix, FILE* out) {
@@ -248,6 +340,10 @@ int main(int argc, char *argv[]) {
 
     // Stop running if CTRL+C is entered
     signal(SIGINT, sigint_handler);
+
+#ifdef TRACE_PF_CR2
+    init_cpu_topology(&cpu_topology);
+#endif
 
     // Enable LBR: seems it is working that way...
     setup_global_lbr();
