@@ -227,7 +227,10 @@ int trace_page_fault(struct trace_event_raw_page_fault_user *ctx) {
     stat.ip = ctx->ip;
     stat.err = ctx->error_code;
     stat.tai = bpf_ktime_get_tai_ns();
-    get_opcodes((void*)(ctx->ip - OPCODES_PROLOGUE_SIZE), &stat.opcodes_ip);
+    stat.opcodes_ip.err = 1;
+
+    if (ctx->ip != ctx->address)
+        get_opcodes((void*)(ctx->ip - OPCODES_PROLOGUE_SIZE), &stat.opcodes_ip);
 
     struct task_struct *task = bpf_get_current_task_btf();
 
