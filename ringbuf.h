@@ -32,10 +32,10 @@
         index %= capacity; \
         \
         /* the compiler might fail to impose the upper bound, so state this exclusively */ \
-        barrier_var(index); \
-        if (index >= capacity) \
-            return 0; \
-        \
+        /* barrier_var(index); */ \
+        /* if (index >= capacity) */ \
+        /*     return 0; */ \
+        /* \ */ \
         return rb->data + index; \
     }
 
