@@ -241,7 +241,6 @@ void handle_event(void *ctx, int cpu, void *data, __u32 data_sz) {
     const char* signal = signal_to_string(e->signal);
 
     printf("{\"version\":{\"rev\":\"%s\",\"date\":\"%s\"},", GIT_REV, GIT_DATE);
-    printf("\"event_type\":\"signal\",");
     printf("\"cpu\":%d,", cpu);
     printf("\"tai\":%llu,", e->tai);
     printf("\"process\":{\"rootns_pid\":%d,\"ns_pid\":%d,\"comm\":\"%s\"},", e->tgid, e->pidns_tgid, e->tgleader_comm);

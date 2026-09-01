@@ -33,8 +33,9 @@ struct {
 #endif
 
 #ifdef TRACE_CPU_MIGRATIONS
-struct task_struct* bpf_task_from_pid(s32 pid) __ksym;
-void bpf_task_release(struct task_struct *p) __ksym;
+// See the documentation for kfuncs: https://docs.ebpf.io/linux/concepts/kfuncs/
+extern struct task_struct* bpf_task_from_pid(s32 pid) __ksym;
+extern void bpf_task_release(struct task_struct *p) __ksym;
 
 // Ring buffer of CPU Migration information.
 DEFINE_RING_BUFFER(cpu_migration_info_rb, struct cpu_migration_info, MAX_CPU_MIGRATION_ENTRIES);
@@ -235,7 +236,7 @@ int trace_page_fault(struct trace_event_raw_page_fault_user *ctx) {
     if (cr2stats) {
         pf_info_rb_push(cr2stats, &stat);
     } else {
-        bpf_printk("SEGVTRACE WARNING: Page fault event skipped");
+        bpf_printk("SEGVTRACE WARNING: Page fault event skipped. Reason: Failed to obtain storage");
     }
 
     return 0;
@@ -253,22 +254,19 @@ int handle_migrate(struct trace_event_raw_sched_migrate_task *ctx)
 
     struct task_struct *task = bpf_task_from_pid(ctx->pid);
 
-    bool skipped = false;
     if (task) {
         struct cpu_migration_info_rb *cpu_migr_stats = bpf_task_storage_get(&pid_cpu_migr, task, 0, BPF_LOCAL_STORAGE_GET_F_CREATE);
         if (cpu_migr_stats) {
             cpu_migration_info_rb_push(cpu_migr_stats, &stat);
         } else {
-            skipped = true;
+            bpf_printk("SEGVTRACE WARNING: Migration event skipped. Reason: Failed to obtain storage");
         }
 
         bpf_task_release(task);
     } else {
-        skipped = true;
+        bpf_printk("SEGVTRACE WARNING: Migration event skipped. Reason: Failed to obtain task from pid");
     }
 
-    if (skipped)
-        bpf_printk("SEGVTRACE WARNING: Migration event skipped");
 
     return 0;
 }
