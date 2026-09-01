@@ -11,6 +11,9 @@
  * - One SIGSEGV event with cr2 = 0 (null pointer)
  */
 
+#define _GNU_SOURCE
+#include <sched.h>
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
@@ -19,6 +22,7 @@
 #include <unistd.h>
 
 #define NUM_PAGES 4
+#define MAX_MIGRATIONS 5
 
 /* Prevent compiler from optimizing away memory accesses */
 volatile int sink;
@@ -54,6 +58,27 @@ void trigger_segfault(void) {
         "adox %%r10, %%r11\n\t"        /* 6 bytes: f3 4d 0f 38 f6 da */
         ::: "memory"
     );
+}
+
+static int migrateToCpu(int cpu)
+{
+    cpu_set_t set;
+
+    CPU_ZERO(&set);
+    CPU_SET(cpu, &set);
+
+    int ret = sched_setaffinity(0, sizeof(set), &set);
+    if (ret != 0)
+        perror("sched_setaffinity");
+
+    CPU_ZERO(&set);
+    sched_getaffinity(0, sizeof(set), &set);
+
+    int newCpu = sched_getcpu();
+
+    fprintf(stderr, "CPU %d allowed: %s\n", cpu, CPU_ISSET(cpu, &set) ? "yes" : "no");
+
+    return newCpu;
 }
 
 int main(int argc, char *argv[]) {
@@ -99,6 +124,18 @@ int main(int argc, char *argv[]) {
 
     /* Small delay to ensure page faults are recorded */
     usleep(10000);
+
+    fprintf(stderr, "[sample_segfault] Forcing CPU migrations...\n");
+
+    int maxCpus = sysconf(_SC_NPROCESSORS_CONF);
+
+    int cpu = sched_getcpu();
+    fprintf(stderr, "currently on CPU: %d\n", cpu);
+    for (size_t i = 0; i < MAX_MIGRATIONS; i++)
+    {
+        cpu = migrateToCpu(cpu > 0 ? cpu - 1 : maxCpus - 1);
+        fprintf(stderr, "currently on CPU: %d\n", cpu);
+    }
 
     fprintf(stderr, "[sample_segfault] Triggering SIGSEGV via naked function...\n");
 

@@ -281,7 +281,7 @@ void handle_event(void *ctx, int cpu, void *data, __u32 data_sz) {
     print_opcodes("last_jmp_target_snapshot", &e->opcodes_last_jmp_target, ',');
 
 #ifdef TRACE_PF_CR2
-    printf("\"page_faults\": [");
+    printf("\"page_faults\":[");
     for_each(i, e->pf_count)
     {
         int core = get_physical_core(&cpu_topology, e->pf[i].cpu);
@@ -299,7 +299,7 @@ void handle_event(void *ctx, int cpu, void *data, __u32 data_sz) {
 #endif
 
 #ifdef TRACE_CPU_MIGRATIONS
-    printf("\"cpu_migrations\": [");
+    printf("\"cpu_migrations\":[");
     for_each(i, e->migration_count)
     {
         int from_core = get_physical_core(&cpu_topology, e->migration[i].from);
@@ -308,8 +308,8 @@ void handle_event(void *ctx, int cpu, void *data, __u32 data_sz) {
         int to_core = get_physical_core(&cpu_topology, e->migration[i].to);
         int to_package = get_package(&cpu_topology, e->migration[i].to);
 
-        printf("{\"from_cpu\":%d,\"to_cpu\":%d,\"from_core\":%d,\"to_core\":%d,\"from_package\":%d,\"to_package\":%d,\"tai\":%llu}",
-                e->migration[i].from, e->migration[i].to, from_core, to_core, from_package, to_package, e->pf[i].tai);
+        printf("{\"tai\":%llu,\"from\":{\"cpu\":%d,\"core\":%d,\"package\":%d},\"to\":{\"cpu\":%d,\"core\":%d,\"package\":%d}}",
+                e->pf[i].tai, e->migration[i].from, from_core, from_package, e->migration[i].to, to_core, to_package);
 
         if (i + 1 != e->migration_count) {
             printf(",");
