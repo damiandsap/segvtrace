@@ -118,10 +118,8 @@ static int read_physical_core(int logical_cpu)
             logical_cpu);
 
     fp = fopen(path, "r");
-    if (!fp) {
-        printf("\n\n\n%d\n\n\n", errno);
+    if (!fp)
         return -1;
-    }
 
     if (fscanf(fp, "%d", &core_id) != 1)
         core_id = -1;
@@ -155,7 +153,10 @@ static int init_cpu_topology(struct cpu_topology *topology)
 {
     topology->num_cpus = (int)sysconf(_SC_NPROCESSORS_CONF);
     if (topology->num_cpus <= 0)
+    {
+        fprintf(stderr, "Failed to create CPU topology due to failure in obtaining the CPU count");
         return -1;
+    }
 
     topology->cpu_core_ids = calloc(topology->num_cpus, sizeof(*topology->cpu_core_ids));
     topology->cpu_package_ids = calloc(topology->num_cpus, sizeof(*topology->cpu_package_ids));
@@ -165,6 +166,7 @@ static int init_cpu_topology(struct cpu_topology *topology)
         free(topology->cpu_package_ids);
         topology->cpu_core_ids = NULL;
         topology->cpu_package_ids = NULL;
+        fprintf(stderr, "Failed to create CPU topology due to insufficient space");
         return -1;
     }
 
@@ -202,7 +204,7 @@ static void free_cpu_topology(struct cpu_topology *topology)
 
 static int get_physical_core(struct cpu_topology *topology, int logical_cpu)
 {
-    if (logical_cpu > 0) {
+    if (logical_cpu >= 0) {
         if (logical_cpu < topology->num_cpus) {
             return topology->cpu_core_ids[logical_cpu];
         } else {
@@ -217,7 +219,7 @@ static int get_physical_core(struct cpu_topology *topology, int logical_cpu)
 
 static int get_package(struct cpu_topology *topology, int logical_cpu)
 {
-    if (logical_cpu > 0) {
+    if (logical_cpu >= 0) {
         if (logical_cpu < topology->num_cpus) {
             return topology->cpu_package_ids[logical_cpu];
         } else {
