@@ -33,13 +33,16 @@ struct {
 #endif
 
 #ifdef TRACE_CPU_MIGRATIONS
+struct task_struct* bpf_task_from_pid(s32 pid) __ksym;
+void bpf_task_release(struct task_struct *p) __ksym;
+
 // Ring buffer of CPU Migration information.
 DEFINE_RING_BUFFER(cpu_migration_info_rb, struct cpu_migration_info, MAX_CPU_MIGRATION_ENTRIES);
 
 struct {
-    __uint(type, BPF_MAP_TYPE_HASH);
-    __uint(max_entries, 10*1024);
-    __type(key, pid_t);
+    __uint(type, BPF_MAP_TYPE_TASK_STORAGE);
+    __uint(map_flags, BPF_F_NO_PREALLOC); // mandatory for task storage (inherently per-task allocated)
+    __type(key, int);
     __type(value, struct cpu_migration_info_rb);
 } pid_cpu_migr SEC(".maps");
 #endif
@@ -175,8 +178,7 @@ int trace_signal(struct trace_event_raw_signal_generate *ctx) {
 
     event->migration_count = 0;
 #ifdef TRACE_CPU_MIGRATIONS
-    pid_t pid = task->pid;
-    struct cpu_migration_info_rb *cpu_migr_stats = bpf_map_lookup_elem(&pid_cpu_migr, &pid);
+    struct cpu_migration_info_rb *cpu_migr_stats = bpf_task_storage_get(&pid_cpu_migr, task, NULL, 0);
 
     if (cpu_migr_stats) {
         for (u64 i = 0; i < cpu_migr_stats->count && i < MAX_CPU_MIGRATION_ENTRIES; i++) {
@@ -232,6 +234,8 @@ int trace_page_fault(struct trace_event_raw_page_fault_user *ctx) {
     struct pf_info_rb *cr2stats = bpf_task_storage_get(&pid_cr2, task, 0, BPF_LOCAL_STORAGE_GET_F_CREATE);
     if (cr2stats) {
         pf_info_rb_push(cr2stats, &stat);
+    } else {
+        bpf_printk("SEGVTRACE WARNING: Page fault event skipped");
     }
 
     return 0;
@@ -247,16 +251,24 @@ int handle_migrate(struct trace_event_raw_sched_migrate_task *ctx)
     stat.to = ctx->dest_cpu;
     stat.tai = bpf_ktime_get_tai_ns();
 
-    pid_t pid = ctx->pid;
+    struct task_struct *task = bpf_task_from_pid(ctx->pid);
 
-    struct cpu_migration_info_rb *cpu_migr_stats = bpf_map_lookup_elem(&pid_cpu_migr, &pid);
-    if (cpu_migr_stats) {
-        cpu_migration_info_rb_push(cpu_migr_stats, &stat);
+    bool skipped = false;
+    if (task) {
+        struct cpu_migration_info_rb *cpu_migr_stats = bpf_task_storage_get(&pid_cpu_migr, task, 0, BPF_LOCAL_STORAGE_GET_F_CREATE);
+        if (cpu_migr_stats) {
+            cpu_migration_info_rb_push(cpu_migr_stats, &stat);
+        } else {
+            skipped = true;
+        }
+
+        bpf_task_release(task);
     } else {
-        struct cpu_migration_info_rb new_stats = { 0 };
-        cpu_migration_info_rb_push(&new_stats, &stat);
-        bpf_map_update_elem(&pid_cpu_migr, &pid, &new_stats, BPF_ANY);
+        skipped = true;
     }
+
+    if (skipped)
+        bpf_printk("SEGVTRACE WARNING: Migration event skipped");
 
     return 0;
 }
