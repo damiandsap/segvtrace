@@ -20,10 +20,17 @@ typedef __u64 u64;
 typedef __s64 s64;
 #include "sigsegv-monitor.h"
 
-#define MAX_LBR_ENTRIES 32
-
 #define for_each(i, cond) for(int (i)=0; (i) < cond; (i)++)
 #define for_each_cpu(cpu) for_each(cpu, get_nprocs_conf())
+
+#ifdef TRACE_PF_CR2
+struct cpu_topology {
+    int *cpu_core_ids;
+    int *cpu_package_ids;
+    int num_cpus;
+};
+static struct cpu_topology cpu_topology;
+#endif
 
 static volatile sig_atomic_t running = 1;
 
@@ -83,6 +90,148 @@ const char* signal_to_string(int signal)
     return NULL;
 }
 
+static void print_opcodes(const char *name, struct opcode_list *list, char suffix)
+{
+    printf("\"%s\":{\"err\":%lld,\"opcodes\":", name, list->err);
+    if (list->err != 1) {
+        printf("\"");
+        for (int i = 0; i < OPCODES_SIZE; i++)
+            printf("%02x", list->opcodes[i]);
+        printf("\"");
+    }
+    else
+    {
+        printf("null");
+    }
+
+    printf("}%c", suffix);
+}
+
+static int read_physical_core(int logical_cpu)
+{
+    char path[256];
+    FILE *fp;
+    int core_id;
+
+    snprintf(path, sizeof(path),
+            "/sys/devices/system/cpu/cpu%d/topology/core_id",
+            logical_cpu);
+
+    fp = fopen(path, "r");
+    if (!fp)
+        return -1;
+
+    if (fscanf(fp, "%d", &core_id) != 1)
+        core_id = -1;
+
+    fclose(fp);
+    return core_id;
+}
+
+static int read_package(int logical_cpu)
+{
+    char path[256];
+    FILE *fp;
+    int package_id;
+
+    snprintf(path, sizeof(path),
+            "/sys/devices/system/cpu/cpu%d/topology/physical_package_id",
+            logical_cpu);
+
+    fp = fopen(path, "r");
+    if (!fp)
+        return -1;
+
+    if (fscanf(fp, "%d", &package_id) != 1)
+        package_id = -1;
+
+    fclose(fp);
+    return package_id;
+}
+
+static int init_cpu_topology(struct cpu_topology *topology)
+{
+    topology->num_cpus = (int)sysconf(_SC_NPROCESSORS_CONF);
+    if (topology->num_cpus <= 0)
+    {
+        fprintf(stderr, "Failed to create CPU topology due to failure in obtaining the CPU count");
+        return -1;
+    }
+
+    topology->cpu_core_ids = calloc(topology->num_cpus, sizeof(*topology->cpu_core_ids));
+    topology->cpu_package_ids = calloc(topology->num_cpus, sizeof(*topology->cpu_package_ids));
+
+    if (!topology->cpu_core_ids || !topology->cpu_package_ids) {
+        free(topology->cpu_core_ids);
+        free(topology->cpu_package_ids);
+        topology->cpu_core_ids = NULL;
+        topology->cpu_package_ids = NULL;
+        fprintf(stderr, "Failed to create CPU topology due to insufficient space");
+        return -1;
+    }
+
+    for (int cpu = 0; cpu < topology->num_cpus; cpu++) {
+        topology->cpu_core_ids[cpu] = read_physical_core(cpu);
+        topology->cpu_package_ids[cpu] = read_package(cpu);
+
+        if (topology->cpu_core_ids[cpu] < 0 || topology->cpu_package_ids[cpu] < 0) {
+            fprintf(stderr,
+                    "Failed to read CPU topology for CPU %d: "
+                    "core=%d package=%d errno=%d\n",
+                    cpu,
+                    topology->cpu_core_ids[cpu],
+                    topology->cpu_package_ids[cpu],
+                    errno);
+
+            free(topology->cpu_core_ids);
+            free(topology->cpu_package_ids);
+            topology->cpu_core_ids = NULL;
+            topology->cpu_package_ids = NULL;
+            return -1;
+        }
+    }
+
+    return 0;
+}
+
+static void free_cpu_topology(struct cpu_topology *topology)
+{
+    free(topology->cpu_core_ids);
+    free(topology->cpu_package_ids);
+    topology->cpu_core_ids = NULL;
+    topology->cpu_package_ids = NULL;
+}
+
+static int get_physical_core(struct cpu_topology *topology, int logical_cpu)
+{
+    if (logical_cpu >= 0) {
+        if (logical_cpu < topology->num_cpus) {
+            return topology->cpu_core_ids[logical_cpu];
+        } else {
+            fprintf(stderr, "WARNING: CPU %d does not exist in topology cache. Attempting to read core id from system: ", logical_cpu);
+            return read_physical_core(logical_cpu);
+        }
+    } else {
+        fprintf(stderr, "WARNING: %d is an invalid CPU id", logical_cpu);
+        return -1;
+    }
+}
+
+static int get_package(struct cpu_topology *topology, int logical_cpu)
+{
+    if (logical_cpu >= 0) {
+        if (logical_cpu < topology->num_cpus) {
+            return topology->cpu_package_ids[logical_cpu];
+        } else {
+            fprintf(stderr, "WARNING: CPU %d does not exist in topology cache. Attempting to read package id from system: ", logical_cpu);
+            return read_package(logical_cpu);
+        }
+    } else {
+        fprintf(stderr, "WARNING: %d is an invalid CPU id", logical_cpu);
+        return -1;
+    }
+}
+
 void handle_event(void *ctx, int cpu, void *data, __u32 data_sz) {
     struct event_t *e = data;
     const char* signal = signal_to_string(e->signal);
@@ -122,27 +271,27 @@ void handle_event(void *ctx, int cpu, void *data, __u32 data_sz) {
     printf("\"cr2\":\"0x%016llx\"", e->regs.cr2);
     printf("},");
 
-    if (e->ip_snapshot_err == 0) {
-        printf("\"ip_snapshot\":\"");
-        for (int i = 0; i < IP_SNAPSHOT_SIZE; i++)
-            printf("%02x", e->ip_snapshot[i]);
-        printf("\",");
-    } else {
-        printf("\"ip_snapshot\":%lld,", (long long)e->ip_snapshot_err);
-    }
+    print_opcodes("ip_snapshot", &e->opcodes_ip, ',');
+    print_opcodes("last_jmp_source_snapshot", &e->opcodes_last_jmp_source, ',');
+    print_opcodes("last_jmp_target_snapshot", &e->opcodes_last_jmp_target, ',');
 
-    #ifdef TRACE_PF_CR2
+#ifdef TRACE_PF_CR2
     printf("\"page_faults\": [");
     for_each(i, e->pf_count)
     {
-        printf("{\"cr2\":\"0x%016llx\",\"err\":\"0x%016llx\",\"tai\":%llu}", e->pf[i].cr2, e->pf[i].err, e->pf[i].tai);
+        int physical_core = get_physical_core(&cpu_topology, e->pf[i].cpu);
+        int package = get_package(&cpu_topology, e->pf[i].cpu);
+
+        printf("{\"ip\":\"0x%016llx\",\"logical_cpu\":%u,\"physical_core\":%d,\"package\":%d,\"cr2\":\"0x%016llx\",\"err\":\"0x%016llx\",\"tai\":%llu,",
+                e->pf[i].ip, e->pf[i].cpu, physical_core, package, e->pf[i].cr2, e->pf[i].err, e->pf[i].tai);
+        print_opcodes("ip_snapshot", &e->pf[i].opcodes_ip, '}');
 
         if (i + 1 != e->pf_count) {
             printf(",");
         }
     }
     printf("],");
-    #endif
+#endif
 
     printf("\"lbr\":[");
     int lbr_limit = (e->lbr_count < MAX_LBR_ENTRIES) ? e->lbr_count : MAX_LBR_ENTRIES;
@@ -172,6 +321,10 @@ void clean() {
     }
 
     free(cpus_fd);
+
+#ifdef TRACE_PF_CR2
+    free_cpu_topology(&cpu_topology);
+#endif
 }
 
 void print_version(char const* prefix, FILE* out) {
@@ -191,6 +344,10 @@ int main(int argc, char *argv[]) {
 
     // Stop running if CTRL+C is entered
     signal(SIGINT, sigint_handler);
+
+#ifdef TRACE_PF_CR2
+    init_cpu_topology(&cpu_topology);
+#endif
 
     // Enable LBR: seems it is working that way...
     setup_global_lbr();
