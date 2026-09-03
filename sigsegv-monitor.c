@@ -37,6 +37,8 @@ struct cpu_topology {
 static struct cpu_topology cpu_topology;
 #endif
 
+static const char* cgroup_version;
+
 static volatile sig_atomic_t running = 1;
 
 // perf_event_open fd for every CPUs
@@ -242,6 +244,7 @@ void handle_event(void *ctx, int cpu, void *data, __u32 data_sz) {
     const char* signal = signal_to_string(e->signal);
 
     printf("{\"version\":{\"rev\":\"%s\",\"date\":\"%s\"},", GIT_REV, GIT_DATE);
+    printf("\"cgroup\":\"%s\",", cgroup_version);
     printf("\"cpu\":%d,", cpu);
     printf("\"tai\":%llu,", e->tai);
     printf("\"process\":{\"rootns_pid\":%d,\"ns_pid\":%d,\"comm\":\"%s\"},", e->tgid, e->pidns_tgid, e->tgleader_comm);
@@ -364,6 +367,48 @@ void print_version(char const* prefix, FILE* out) {
     fprintf(out, "%scommit %s committed %s\n", prefix, GIT_REV, GIT_DATE);
 }
 
+static const char* get_cgroup_version(void)
+{
+    FILE *fp = fopen("/proc/self/mountinfo", "r");
+    if (!fp)
+        return "none";
+
+    char *line = NULL;
+    size_t len = 0;
+    bool v1 = false;
+    bool v2 = false;
+
+    while (getline(&line, &len, fp) != -1) {
+        char *sep = strstr(line, " - ");
+        if (!sep)
+            continue;
+
+        sep += 3;
+
+        if (strncmp(sep, "cgroup2 ", 8) == 0)
+            v2 = true;
+        else if (strncmp(sep, "cgroup ", 7) == 0)
+            v1 = true;
+
+        if (v1 && v2)
+            break;
+    }
+
+    free(line);
+    fclose(fp);
+
+    if (v1 && v2)
+        return "hybrid";
+
+    if (v1)
+        return "v1";
+
+    if (v2)
+        return "v2";
+
+    return "none";
+}
+
 static void* kernel_tracing_proc(void *data)
 {
     FILE *fp = data;
@@ -415,9 +460,9 @@ int main(int argc, char *argv[]) {
     }
 
     pthread_t tracing_thread;
-    FILE *tracing_pipe_file = ;
+    FILE *tracing_pipe_file;
     if (args.trace_kernel_logs) {
-        tracing_pipe_file = fopen("/sys/kernel/tracing/trace_pipe", "r")
+        tracing_pipe_file = fopen("/sys/kernel/tracing/trace_pipe", "r");
         if (!tracing_pipe_file) {
             fprintf(stderr, "Failed to open kernel tracing pipe\n");
             return 1;
@@ -428,6 +473,9 @@ int main(int argc, char *argv[]) {
             return 1;
         }
     }
+
+    cgroup_version = get_cgroup_version();
+    fprintf(stderr, "[*] cgroup version: %s\n", cgroup_version);
 
     struct sigsegv_monitor_bpf *skel;
     struct perf_buffer *pb = NULL;
