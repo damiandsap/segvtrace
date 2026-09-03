@@ -156,9 +156,7 @@ static int read_package(int logical_cpu)
 
 static int init_cpu_topology(struct cpu_topology *topology)
 {
-    fprintf(stderr, "TEST\n");
     topology->num_cpus = (int)sysconf(_SC_NPROCESSORS_CONF);
-    fprintf(stderr, "TEST\n");
     if (topology->num_cpus <= 0)
     {
         fprintf(stderr, "Failed to create CPU topology due to failure in obtaining the CPU count");

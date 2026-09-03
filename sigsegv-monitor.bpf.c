@@ -236,7 +236,7 @@ int trace_page_fault(struct trace_event_raw_page_fault_user *ctx) {
     if (cr2stats) {
         pf_info_rb_push(cr2stats, &stat);
     } else {
-        bpf_printk("SEGVTRACE WARNING: Page fault event skipped. Reason: Failed to obtain storage");
+        bpf_printk("SEGVTRACE WARNING: Page fault event skipped. Reason: Failed to obtain storage. TAI=%llu", stat.tai);
     }
 
     return 0;
@@ -259,12 +259,12 @@ int handle_migrate(struct trace_event_raw_sched_migrate_task *ctx)
         if (cpu_migr_stats) {
             cpu_migration_info_rb_push(cpu_migr_stats, &stat);
         } else {
-            bpf_printk("SEGVTRACE WARNING: Migration event skipped. Reason: Failed to obtain storage");
+            bpf_printk("SEGVTRACE WARNING: Migration event skipped. Reason: Failed to obtain storage. TAI=%llu", stat.tai);
         }
 
         bpf_task_release(task);
     } else {
-        bpf_printk("SEGVTRACE WARNING: Migration event skipped. Reason: Failed to obtain task from pid");
+        bpf_printk("SEGVTRACE WARNING: Migration event skipped. Reason: Failed to obtain task from pid. TAI=%llu", stat.tai);
     }
 
 
