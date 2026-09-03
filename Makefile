@@ -29,7 +29,7 @@ VMLINUX = vmlinux.h
 # Compiler flags
 # -g: Debug info (required for BTF)
 # -O2: Optimization (required for BPF)
-CFLAGS := -g -O2 -Wall -DGIT_REV=\"$(GIT_REV)\" -DGIT_DATE=\"$(GIT_DATE)\"
+CFLAGS := -g -O2 -Wall -pthread -DGIT_REV=\"$(GIT_REV)\" -DGIT_DATE=\"$(GIT_DATE)\"
 BPF_CFLAGS := -g -O2 -target bpf -D__TARGET_ARCH_x86
 
 # Libs to link

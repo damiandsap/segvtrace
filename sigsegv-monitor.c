@@ -11,6 +11,7 @@
 #include <sys/ioctl.h>
 #include <bpf/libbpf.h>
 #include "sigsegv-monitor.skel.h"
+#include <pthread.h>
 
 // TODO: how to do this properly?
 #include <linux/types.h>
@@ -155,7 +156,9 @@ static int read_package(int logical_cpu)
 
 static int init_cpu_topology(struct cpu_topology *topology)
 {
+    fprintf(stderr, "TEST\n");
     topology->num_cpus = (int)sysconf(_SC_NPROCESSORS_CONF);
+    fprintf(stderr, "TEST\n");
     if (topology->num_cpus <= 0)
     {
         fprintf(stderr, "Failed to create CPU topology due to failure in obtaining the CPU count");
@@ -363,12 +366,68 @@ void print_version(char const* prefix, FILE* out) {
     fprintf(out, "%scommit %s committed %s\n", prefix, GIT_REV, GIT_DATE);
 }
 
+static void* kernel_tracing_proc(void *data)
+{
+    FILE *fp = data;
+
+    char *line = NULL;
+    size_t line_len = 0;
+    ssize_t read_len;
+    while ((read_len = getline(&line, &line_len, fp)) != -1) {
+        fprintf(stderr, "%s", line);
+    }
+
+    fclose(fp);
+    free(line);
+
+    return (void*)0;
+}
+
+struct args
+{
+    bool print_version;
+    bool trace_kernel_logs;
+};
+
+static void parse_args(int argc, char **argv, struct args *args)
+{
+    args->print_version = false;
+    args->trace_kernel_logs = false;
+
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "-v") == 0 || strcmp(argv[i], "--version") == 0) {
+            args->print_version = true;
+        }
+
+        if (strcmp(argv[i], "-t") == 0 || strcmp(argv[i], "--trace-kernel-logs") == 0) {
+            args->trace_kernel_logs = true;
+        }
+    }
+}
+
 int main(int argc, char *argv[]) {
-    if (argc > 1 && (strcmp(argv[1], "-v") == 0 || strcmp(argv[1], "--version") == 0)) {
+    struct args args;
+    parse_args(argc, argv, &args);
+
+    if (args.print_version) {
         print_version("", stdout);
         return 0;
     } else {
         print_version("[*] version ", stderr);
+    }
+
+    pthread_t tracing_thread;
+    if (args.trace_kernel_logs) {
+        FILE *fp = fopen("/sys/kernel/tracing/trace_pipe", "r");
+        if (!fp) {
+            fprintf(stderr, "Failed to open kernel tracing pipe\n");
+            return 1;
+        }
+
+        if (pthread_create(&tracing_thread, NULL, kernel_tracing_proc, fp) != 0) {
+            fprintf(stderr, "Failed to spawn kernel log tracing thread\n");
+            return 1;
+        }
     }
 
     struct sigsegv_monitor_bpf *skel;
@@ -401,6 +460,10 @@ int main(int argc, char *argv[]) {
 
     fprintf(stderr, "\b\b[*] Exiting the program...\n");
 
+    if (args.trace_kernel_logs) {
+        pthread_cancel(tracing_thread);
+        pthread_join(tracing_thread, NULL);
+    }
     clean();
 
     return 0;
