@@ -415,14 +415,15 @@ int main(int argc, char *argv[]) {
     }
 
     pthread_t tracing_thread;
+    FILE *tracing_pipe_file = ;
     if (args.trace_kernel_logs) {
-        FILE *fp = fopen("/sys/kernel/tracing/trace_pipe", "r");
-        if (!fp) {
+        tracing_pipe_file = fopen("/sys/kernel/tracing/trace_pipe", "r")
+        if (!tracing_pipe_file) {
             fprintf(stderr, "Failed to open kernel tracing pipe\n");
             return 1;
         }
 
-        if (pthread_create(&tracing_thread, NULL, kernel_tracing_proc, fp) != 0) {
+        if (pthread_create(&tracing_thread, NULL, kernel_tracing_proc, tracing_pipe_file) != 0) {
             fprintf(stderr, "Failed to spawn kernel log tracing thread\n");
             return 1;
         }
@@ -461,7 +462,9 @@ int main(int argc, char *argv[]) {
     if (args.trace_kernel_logs) {
         pthread_cancel(tracing_thread);
         pthread_join(tracing_thread, NULL);
+        fclose(tracing_pipe_file);
     }
+
     clean();
 
     return 0;
