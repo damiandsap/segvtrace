@@ -361,7 +361,7 @@ void clean() {
 }
 
 void print_version(char const* prefix, FILE* out) {
-    fprintf(out, "%scommit %s committed %s\n", prefix, GIT_REV, GIT_DATE);
+    fprintf(out, "%scommit %s committed on %s, kernel %d\n", prefix, GIT_REV, GIT_DATE, KERNEL_VERSION);
 }
 
 static void* kernel_tracing_proc(void *data)
@@ -415,9 +415,9 @@ int main(int argc, char *argv[]) {
     }
 
     pthread_t tracing_thread;
-    FILE *tracing_pipe_file = ;
+    FILE *tracing_pipe_file;
     if (args.trace_kernel_logs) {
-        tracing_pipe_file = fopen("/sys/kernel/tracing/trace_pipe", "r")
+        tracing_pipe_file = fopen("/sys/kernel/tracing/trace_pipe", "r");
         if (!tracing_pipe_file) {
             fprintf(stderr, "Failed to open kernel tracing pipe\n");
             return 1;

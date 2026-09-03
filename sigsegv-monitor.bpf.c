@@ -5,6 +5,9 @@
 #include "sigsegv-monitor.h"
 #include "ringbuf.h"
 
+// See https://docs.ebpf.io/linux/program-type/BPF_PROG_TYPE_TRACEPOINT/
+#define HAS_KFUNCS_IN_TRACEPOINTS (KERNEL_VERSION >= 6012)
+
 // if /sys/kernel/tracing/trace_on  is set to 1,
 //   cat /sys/kernel/tracing/trace
 // will show the bpf_printk() output
@@ -33,12 +36,13 @@ struct {
 #endif
 
 #ifdef TRACE_CPU_MIGRATIONS
+// Ring buffer of CPU Migration information.
+DEFINE_RING_BUFFER(cpu_migration_info_rb, struct cpu_migration_info, MAX_CPU_MIGRATION_ENTRIES);
+
+#if HAS_KFUNCS_IN_TRACEPOINTS
 // See the documentation for kfuncs: https://docs.ebpf.io/linux/concepts/kfuncs/
 extern struct task_struct* bpf_task_from_pid(s32 pid) __ksym;
 extern void bpf_task_release(struct task_struct *p) __ksym;
-
-// Ring buffer of CPU Migration information.
-DEFINE_RING_BUFFER(cpu_migration_info_rb, struct cpu_migration_info, MAX_CPU_MIGRATION_ENTRIES);
 
 struct {
     __uint(type, BPF_MAP_TYPE_TASK_STORAGE);
@@ -46,6 +50,15 @@ struct {
     __type(key, int);
     __type(value, struct cpu_migration_info_rb);
 } pid_cpu_migr SEC(".maps");
+#else
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, 10*1024);
+    __type(key, pid_t);
+    __type(value, struct cpu_migration_info_rb);
+} pid_cpu_migr SEC(".maps");
+#endif
+
 #endif
 
 // Output map (for user space)
@@ -179,7 +192,12 @@ int trace_signal(struct trace_event_raw_signal_generate *ctx) {
 
     event->migration_count = 0;
 #ifdef TRACE_CPU_MIGRATIONS
+#if HAS_KFUNCS_IN_TRACEPOINTS
     struct cpu_migration_info_rb *cpu_migr_stats = bpf_task_storage_get(&pid_cpu_migr, task, NULL, 0);
+#else
+    pid_t pid = task->pid;
+    struct cpu_migration_info_rb *cpu_migr_stats = bpf_map_lookup_elem(&pid_cpu_migr, &pid);
+#endif
 
     if (cpu_migr_stats) {
         for (u64 i = 0; i < cpu_migr_stats->count && i < MAX_CPU_MIGRATION_ENTRIES; i++) {
@@ -252,6 +270,7 @@ int handle_migrate(struct trace_event_raw_sched_migrate_task *ctx)
     stat.to = ctx->dest_cpu;
     stat.tai = bpf_ktime_get_tai_ns();
 
+#if HAS_KFUNCS_IN_TRACEPOINTS
     struct task_struct *task = bpf_task_from_pid(ctx->pid);
 
     if (task) {
@@ -266,7 +285,20 @@ int handle_migrate(struct trace_event_raw_sched_migrate_task *ctx)
     } else {
         bpf_printk("SEGVTRACE WARNING: Migration event skipped. Reason: Failed to obtain task from pid. TAI=%llu", stat.tai);
     }
+#else
+    pid_t pid = ctx->pid;
 
+    struct cpu_migration_info_rb *cpu_migr_stats = bpf_map_lookup_elem(&pid_cpu_migr, &pid);
+    if (cpu_migr_stats) {
+        cpu_migration_info_rb_push(cpu_migr_stats, &stat);
+    } else {
+        struct cpu_migration_info_rb new_stats = { 0 };
+        cpu_migration_info_rb_push(&new_stats, &stat);
+        if (bpf_map_update_elem(&pid_cpu_migr, &pid, &new_stats, BPF_ANY) != 0) {
+            bpf_printk("SEGVTRACE WARNING: Migration event skipped. Reason: Failed to create ring buffer. TAI=%llu", stat.tai);
+        }
+    }
+#endif
 
     return 0;
 }
