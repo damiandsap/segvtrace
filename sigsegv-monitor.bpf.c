@@ -6,7 +6,9 @@
 #include "ringbuf.h"
 
 // See https://docs.ebpf.io/linux/program-type/BPF_PROG_TYPE_TRACEPOINT/
-#define HAS_KFUNCS_IN_TRACEPOINTS (KERNEL_VERSION >= 6012)
+// #define HAS_KFUNCS_IN_TRACEPOINTS (KERNEL_VERSION >= 6012)
+// Disable this for now
+#define HAS_KFUNCS_IN_TRACEPOINTS false
 
 // if /sys/kernel/tracing/trace_on  is set to 1,
 //   cat /sys/kernel/tracing/trace
