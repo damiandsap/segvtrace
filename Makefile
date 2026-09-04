@@ -2,6 +2,12 @@
 CLANG ?= clang
 BPFTOOL ?= bpftool
 
+KERNEL_VERSION := $(shell \
+    v=$$(uname -r | cut -d- -f1); \
+    major=$$(echo $$v | cut -d. -f1); \
+    minor=$$(echo $$v | cut -d. -f2); \
+    printf '%d%03d' $$major $$minor)
+
 # Git version info (build fails if not available)
 GIT_REV := $(shell git rev-parse --short HEAD)
 GIT_DATE := $(shell git log -1 --format=%cI)
@@ -29,8 +35,8 @@ VMLINUX = vmlinux.h
 # Compiler flags
 # -g: Debug info (required for BTF)
 # -O2: Optimization (required for BPF)
-CFLAGS := -g -O2 -Wall -DGIT_REV=\"$(GIT_REV)\" -DGIT_DATE=\"$(GIT_DATE)\"
-BPF_CFLAGS := -g -O2 -target bpf -D__TARGET_ARCH_x86
+CFLAGS := -g -O2 -Wall -pthread -DGIT_REV=\"$(GIT_REV)\" -DGIT_DATE=\"$(GIT_DATE)\" -DKERNEL_VERSION=$(KERNEL_VERSION)
+BPF_CFLAGS := -g -O2 -target bpf -D__TARGET_ARCH_x86 -DKERNEL_VERSION=$(KERNEL_VERSION)
 
 # Libs to link
 LIBS := -lbpf -lelf -lz

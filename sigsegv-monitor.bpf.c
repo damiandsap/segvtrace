@@ -3,6 +3,12 @@
 #include <bpf/bpf_core_read.h>
 #include <bpf/bpf_tracing.h>
 #include "sigsegv-monitor.h"
+#include "ringbuf.h"
+
+// See https://docs.ebpf.io/linux/program-type/BPF_PROG_TYPE_TRACEPOINT/
+// #define HAS_KFUNCS_IN_TRACEPOINTS (KERNEL_VERSION >= 6012)
+// Disable this for now
+#define HAS_KFUNCS_IN_TRACEPOINTS false
 
 // if /sys/kernel/tracing/trace_on  is set to 1,
 //   cat /sys/kernel/tracing/trace
@@ -21,11 +27,7 @@ struct trace_event_raw_page_fault_user {
 // NOTE: pf_info_rb must be valid when zero-initialized, since
 // bpf_task_storage_get with BPF_LOCAL_STORAGE_GET_F_CREATE returns
 // a zero-filled struct on first access.
-struct pf_info_rb {
-    struct pf_info stat[MAX_USER_PF_ENTRIES];
-    u64 head;
-    u64 count;
-};
+DEFINE_RING_BUFFER(pf_info_rb, struct pf_info, MAX_USER_PF_ENTRIES);
 
 struct {
     __uint(type, BPF_MAP_TYPE_TASK_STORAGE);
@@ -33,32 +35,32 @@ struct {
     __type(key, int);
     __type(value, struct pf_info_rb);
 } pid_cr2 SEC(".maps");
+#endif
 
-inline void cr2stats_push(struct pf_info_rb* stats, struct pf_info* value) {
-    if (stats->head < MAX_USER_PF_ENTRIES) {
-        stats->stat[stats->head] = *value;
+#ifdef TRACE_CPU_MIGRATIONS
+// Ring buffer of CPU Migration information.
+DEFINE_RING_BUFFER(cpu_migration_info_rb, struct cpu_migration_info, MAX_CPU_MIGRATION_ENTRIES);
 
-        if (++stats->head == MAX_USER_PF_ENTRIES) {
-            stats->head = 0;
-        }
+#if HAS_KFUNCS_IN_TRACEPOINTS
+// See the documentation for kfuncs: https://docs.ebpf.io/linux/concepts/kfuncs/
+extern struct task_struct* bpf_task_from_pid(s32 pid) __ksym;
+extern void bpf_task_release(struct task_struct *p) __ksym;
 
-        if (stats->count < MAX_USER_PF_ENTRIES) {
-            ++stats->count;
-        }
-    }
-}
+struct {
+    __uint(type, BPF_MAP_TYPE_TASK_STORAGE);
+    __uint(map_flags, BPF_F_NO_PREALLOC); // mandatory for task storage (inherently per-task allocated)
+    __type(key, int);
+    __type(value, struct cpu_migration_info_rb);
+} pid_cpu_migr SEC(".maps");
+#else
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, 10*1024);
+    __type(key, pid_t);
+    __type(value, struct cpu_migration_info_rb);
+} pid_cpu_migr SEC(".maps");
+#endif
 
-// The `index` parameter here is not an index in the array, but an index in the ring buffer,
-// i.e. passing an index 0 would return the oldest element in the ring buffer.
-inline struct pf_info* cr2stats_get(struct pf_info_rb* stats, u64 index) {
-    if (stats->count == MAX_USER_PF_ENTRIES) {
-        index += stats->head; // this makes index unbounded to the verifier
-    }
-
-    // establish bound for index; also helps if above index += ... needs to wrap around
-    index %= MAX_USER_PF_ENTRIES;
-    return stats->stat + index;
-}
 #endif
 
 // Output map (for user space)
@@ -181,16 +183,32 @@ int trace_signal(struct trace_event_raw_signal_generate *ctx) {
          * R5 unbounded memory access, make sure to bounds check any such access
          */
         for (u64 i = 0; i < cr2stats->count && i < MAX_USER_PF_ENTRIES; i++) {
-            struct pf_info* stat = cr2stats_get(cr2stats, i);
+            struct pf_info* stat = pf_info_rb_get(cr2stats, i);
             if (stat) {
                 event->pf[i] = *stat;
                 ++event->pf_count;
             }
         }
-
-#ifdef TRACE_PF_CR2_INCREMENTAL
-        bpf_task_storage_delete(&pid_cr2, task);
+    }
 #endif
+
+    event->migration_count = 0;
+#ifdef TRACE_CPU_MIGRATIONS
+#if HAS_KFUNCS_IN_TRACEPOINTS
+    struct cpu_migration_info_rb *cpu_migr_stats = bpf_task_storage_get(&pid_cpu_migr, task, NULL, 0);
+#else
+    pid_t pid = task->pid;
+    struct cpu_migration_info_rb *cpu_migr_stats = bpf_map_lookup_elem(&pid_cpu_migr, &pid);
+#endif
+
+    if (cpu_migr_stats) {
+        for (u64 i = 0; i < cpu_migr_stats->count && i < MAX_CPU_MIGRATION_ENTRIES; i++) {
+            struct cpu_migration_info* stat = cpu_migration_info_rb_get(cpu_migr_stats, i);
+            if (stat) {
+                event->migration[i] = *stat;
+                ++event->migration_count;
+            }
+        }
     }
 #endif
 
@@ -236,12 +254,56 @@ int trace_page_fault(struct trace_event_raw_page_fault_user *ctx) {
 
     struct pf_info_rb *cr2stats = bpf_task_storage_get(&pid_cr2, task, 0, BPF_LOCAL_STORAGE_GET_F_CREATE);
     if (cr2stats) {
-        cr2stats_push(cr2stats, &stat);
+        pf_info_rb_push(cr2stats, &stat);
+    } else {
+        bpf_printk("SEGVTRACE WARNING: Page fault event skipped. Reason: Failed to obtain storage. TAI=%llu", stat.tai);
     }
 
     return 0;
 }
+#endif
 
+#ifdef TRACE_CPU_MIGRATIONS
+SEC("tracepoint/sched/sched_migrate_task")
+int handle_migrate(struct trace_event_raw_sched_migrate_task *ctx)
+{
+    struct cpu_migration_info stat;
+    stat.from = ctx->orig_cpu;
+    stat.to = ctx->dest_cpu;
+    stat.tai = bpf_ktime_get_tai_ns();
+
+#if HAS_KFUNCS_IN_TRACEPOINTS
+    struct task_struct *task = bpf_task_from_pid(ctx->pid);
+
+    if (task) {
+        struct cpu_migration_info_rb *cpu_migr_stats = bpf_task_storage_get(&pid_cpu_migr, task, 0, BPF_LOCAL_STORAGE_GET_F_CREATE);
+        if (cpu_migr_stats) {
+            cpu_migration_info_rb_push(cpu_migr_stats, &stat);
+        } else {
+            bpf_printk("SEGVTRACE WARNING: Migration event skipped. Reason: Failed to obtain storage. TAI=%llu", stat.tai);
+        }
+
+        bpf_task_release(task);
+    } else {
+        bpf_printk("SEGVTRACE WARNING: Migration event skipped. Reason: Failed to obtain task from pid. TAI=%llu", stat.tai);
+    }
+#else
+    pid_t pid = ctx->pid;
+
+    struct cpu_migration_info_rb *cpu_migr_stats = bpf_map_lookup_elem(&pid_cpu_migr, &pid);
+    if (cpu_migr_stats) {
+        cpu_migration_info_rb_push(cpu_migr_stats, &stat);
+    } else {
+        struct cpu_migration_info_rb new_stats = { 0 };
+        cpu_migration_info_rb_push(&new_stats, &stat);
+        if (bpf_map_update_elem(&pid_cpu_migr, &pid, &new_stats, BPF_ANY) != 0) {
+            bpf_printk("SEGVTRACE WARNING: Migration event skipped. Reason: Failed to create ring buffer. TAI=%llu", stat.tai);
+        }
+    }
+#endif
+
+    return 0;
+}
 #endif
 
 char LICENSE[] SEC("license") = "GPL";

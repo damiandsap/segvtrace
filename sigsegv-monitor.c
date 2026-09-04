@@ -11,6 +11,7 @@
 #include <sys/ioctl.h>
 #include <bpf/libbpf.h>
 #include "sigsegv-monitor.skel.h"
+#include <pthread.h>
 
 // TODO: how to do this properly?
 #include <linux/types.h>
@@ -23,7 +24,11 @@ typedef __s64 s64;
 #define for_each(i, cond) for(int (i)=0; (i) < cond; (i)++)
 #define for_each_cpu(cpu) for_each(cpu, get_nprocs_conf())
 
-#ifdef TRACE_PF_CR2
+#if defined(TRACE_PF_CR2) || defined(TRACE_CPU_MIGRATIONS)
+#define NEEDS_CPU_TOPOLOGY
+#endif
+
+#ifdef NEEDS_CPU_TOPOLOGY
 struct cpu_topology {
     int *cpu_core_ids;
     int *cpu_package_ids;
@@ -276,17 +281,37 @@ void handle_event(void *ctx, int cpu, void *data, __u32 data_sz) {
     print_opcodes("last_jmp_target_snapshot", &e->opcodes_last_jmp_target, ',');
 
 #ifdef TRACE_PF_CR2
-    printf("\"page_faults\": [");
+    printf("\"page_faults\":[");
     for_each(i, e->pf_count)
     {
-        int physical_core = get_physical_core(&cpu_topology, e->pf[i].cpu);
+        int core = get_physical_core(&cpu_topology, e->pf[i].cpu);
         int package = get_package(&cpu_topology, e->pf[i].cpu);
 
-        printf("{\"ip\":\"0x%016llx\",\"logical_cpu\":%u,\"physical_core\":%d,\"package\":%d,\"cr2\":\"0x%016llx\",\"err\":\"0x%016llx\",\"tai\":%llu,",
-                e->pf[i].ip, e->pf[i].cpu, physical_core, package, e->pf[i].cr2, e->pf[i].err, e->pf[i].tai);
+        printf("{\"ip\":\"0x%016llx\",\"cpu\":%u,\"core\":%d,\"package\":%d,\"cr2\":\"0x%016llx\",\"err\":\"0x%016llx\",\"tai\":%llu,",
+                e->pf[i].ip, e->pf[i].cpu, core, package, e->pf[i].cr2, e->pf[i].err, e->pf[i].tai);
         print_opcodes("ip_snapshot", &e->pf[i].opcodes_ip, '}');
 
         if (i + 1 != e->pf_count) {
+            printf(",");
+        }
+    }
+    printf("],");
+#endif
+
+#ifdef TRACE_CPU_MIGRATIONS
+    printf("\"cpu_migrations\":[");
+    for_each(i, e->migration_count)
+    {
+        int from_core = get_physical_core(&cpu_topology, e->migration[i].from);
+        int from_package = get_package(&cpu_topology, e->migration[i].from);
+
+        int to_core = get_physical_core(&cpu_topology, e->migration[i].to);
+        int to_package = get_package(&cpu_topology, e->migration[i].to);
+
+        printf("{\"tai\":%llu,\"from\":{\"cpu\":%d,\"core\":%d,\"package\":%d},\"to\":{\"cpu\":%d,\"core\":%d,\"package\":%d}}",
+                e->pf[i].tai, e->migration[i].from, from_core, from_package, e->migration[i].to, to_core, to_package);
+
+        if (i + 1 != e->migration_count) {
             printf(",");
         }
     }
@@ -309,6 +334,14 @@ void handle_event(void *ctx, int cpu, void *data, __u32 data_sz) {
     fflush(stdout);
 }
 
+
+void handle_lost_event(void *ctx, int cpu, __u64 cnt)
+{
+    fprintf(stderr, "Lost %llu events on CPU %d\n", cnt, cpu);
+
+    fflush(stderr);
+}
+
 void sigint_handler(int dummy) {
     running = 0;
 }
@@ -322,21 +355,78 @@ void clean() {
 
     free(cpus_fd);
 
-#ifdef TRACE_PF_CR2
+#ifdef NEEDS_CPU_TOPOLOGY
     free_cpu_topology(&cpu_topology);
 #endif
 }
 
 void print_version(char const* prefix, FILE* out) {
-    fprintf(out, "%scommit %s committed %s\n", prefix, GIT_REV, GIT_DATE);
+    fprintf(out, "%scommit %s committed on %s, kernel %d\n", prefix, GIT_REV, GIT_DATE, KERNEL_VERSION);
+}
+
+static void* kernel_tracing_proc(void *data)
+{
+    FILE *fp = data;
+
+    char *line = NULL;
+    size_t line_len = 0;
+    ssize_t read_len;
+    while ((read_len = getline(&line, &line_len, fp)) != -1) {
+        fprintf(stderr, "%s", line);
+    }
+
+    fclose(fp);
+    free(line);
+
+    return (void*)0;
+}
+
+struct args
+{
+    bool print_version;
+    bool trace_kernel_logs;
+};
+
+static void parse_args(int argc, char **argv, struct args *args)
+{
+    args->print_version = false;
+    args->trace_kernel_logs = false;
+
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "-v") == 0 || strcmp(argv[i], "--version") == 0) {
+            args->print_version = true;
+        }
+
+        if (strcmp(argv[i], "-t") == 0 || strcmp(argv[i], "--trace-kernel-logs") == 0) {
+            args->trace_kernel_logs = true;
+        }
+    }
 }
 
 int main(int argc, char *argv[]) {
-    if (argc > 1 && (strcmp(argv[1], "-v") == 0 || strcmp(argv[1], "--version") == 0)) {
+    struct args args;
+    parse_args(argc, argv, &args);
+
+    if (args.print_version) {
         print_version("", stdout);
         return 0;
     } else {
         print_version("[*] version ", stderr);
+    }
+
+    pthread_t tracing_thread;
+    FILE *tracing_pipe_file;
+    if (args.trace_kernel_logs) {
+        tracing_pipe_file = fopen("/sys/kernel/tracing/trace_pipe", "r");
+        if (!tracing_pipe_file) {
+            fprintf(stderr, "Failed to open kernel tracing pipe\n");
+            return 1;
+        }
+
+        if (pthread_create(&tracing_thread, NULL, kernel_tracing_proc, tracing_pipe_file) != 0) {
+            fprintf(stderr, "Failed to spawn kernel log tracing thread\n");
+            return 1;
+        }
     }
 
     struct sigsegv_monitor_bpf *skel;
@@ -345,7 +435,7 @@ int main(int argc, char *argv[]) {
     // Stop running if CTRL+C is entered
     signal(SIGINT, sigint_handler);
 
-#ifdef TRACE_PF_CR2
+#ifdef NEEDS_CPU_TOPOLOGY
     init_cpu_topology(&cpu_topology);
 #endif
 
@@ -358,7 +448,7 @@ int main(int argc, char *argv[]) {
     if (sigsegv_monitor_bpf__load(skel)) return 1;
     if (sigsegv_monitor_bpf__attach(skel)) return 1;
 
-    pb = perf_buffer__new(bpf_map__fd(skel->maps.events), 8, handle_event, NULL, NULL, NULL);
+    pb = perf_buffer__new(bpf_map__fd(skel->maps.events), 8, handle_event, handle_lost_event, NULL, NULL);
     if (!pb) return 1;
 
     fprintf(stderr, "[*] Monitoring for SIGSEGV... (Ctrl+C to stop)\n");
@@ -368,6 +458,12 @@ int main(int argc, char *argv[]) {
     }
 
     fprintf(stderr, "\b\b[*] Exiting the program...\n");
+
+    if (args.trace_kernel_logs) {
+        pthread_cancel(tracing_thread);
+        pthread_join(tracing_thread, NULL);
+        fclose(tracing_pipe_file);
+    }
 
     clean();
 
