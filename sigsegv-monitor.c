@@ -1,7 +1,6 @@
 #define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
 #include <unistd.h>
 #include <fcntl.h>
 #include <signal.h>
@@ -10,30 +9,16 @@
 #include <linux/perf_event.h>
 #include <sys/ioctl.h>
 #include <bpf/libbpf.h>
-#include "sigsegv-monitor.skel.h"
 #include <pthread.h>
-
-// TODO: how to do this properly?
-#include <linux/types.h>
-typedef __u8 u8;
-typedef __u32 u32;
-typedef __u64 u64;
-typedef __s64 s64;
+#include "sigsegv-monitor.skel.h"
+#include "monitor-common.h"
 #include "sigsegv-monitor.h"
-
-#define for_each(i, cond) for(int (i)=0; (i) < cond; (i)++)
-#define for_each_cpu(cpu) for_each(cpu, get_nprocs_conf())
 
 #if defined(TRACE_PF_CR2) || defined(TRACE_CPU_MIGRATIONS)
 #define NEEDS_CPU_TOPOLOGY
 #endif
 
 #ifdef NEEDS_CPU_TOPOLOGY
-struct cpu_topology {
-    int *cpu_core_ids;
-    int *cpu_package_ids;
-    int num_cpus;
-};
 static struct cpu_topology cpu_topology;
 #endif
 
@@ -45,7 +30,8 @@ static volatile sig_atomic_t running = 1;
 static int *cpus_fd;
 
 // TODO: do we need this to enable LBR? We take the samples from within the eBPF program...
-void setup_global_lbr() {
+static void setup_global_lbr(void)
+{
     int num_cpus = get_nprocs_conf();
     fprintf(stderr, "[*] Activating LBR hardware on %d CPUs...\n", num_cpus);
 
@@ -87,7 +73,7 @@ void setup_global_lbr() {
     }
 }
 
-const char* signal_to_string(int signal)
+static const char* signal_to_string(int signal)
 {
     switch (signal) {
         case 4: return "SIGILL";
@@ -97,149 +83,8 @@ const char* signal_to_string(int signal)
     return NULL;
 }
 
-static void print_opcodes(const char *name, struct opcode_list *list, char suffix)
+static void handle_event(void *ctx, int cpu, void *data, __u32 data_sz)
 {
-    printf("\"%s\":{\"err\":%lld,\"opcodes\":", name, list->err);
-    if (list->err != 1) {
-        printf("\"");
-        for (int i = 0; i < OPCODES_SIZE; i++)
-            printf("%02x", list->opcodes[i]);
-        printf("\"");
-    }
-    else
-    {
-        printf("null");
-    }
-
-    printf("}%c", suffix);
-}
-
-static int read_physical_core(int logical_cpu)
-{
-    char path[256];
-    FILE *fp;
-    int core_id;
-
-    snprintf(path, sizeof(path),
-            "/sys/devices/system/cpu/cpu%d/topology/core_id",
-            logical_cpu);
-
-    fp = fopen(path, "r");
-    if (!fp)
-        return -1;
-
-    if (fscanf(fp, "%d", &core_id) != 1)
-        core_id = -1;
-
-    fclose(fp);
-    return core_id;
-}
-
-static int read_package(int logical_cpu)
-{
-    char path[256];
-    FILE *fp;
-    int package_id;
-
-    snprintf(path, sizeof(path),
-            "/sys/devices/system/cpu/cpu%d/topology/physical_package_id",
-            logical_cpu);
-
-    fp = fopen(path, "r");
-    if (!fp)
-        return -1;
-
-    if (fscanf(fp, "%d", &package_id) != 1)
-        package_id = -1;
-
-    fclose(fp);
-    return package_id;
-}
-
-static int init_cpu_topology(struct cpu_topology *topology)
-{
-    topology->num_cpus = (int)sysconf(_SC_NPROCESSORS_CONF);
-    if (topology->num_cpus <= 0)
-    {
-        fprintf(stderr, "Failed to create CPU topology due to failure in obtaining the CPU count");
-        return -1;
-    }
-
-    topology->cpu_core_ids = calloc(topology->num_cpus, sizeof(*topology->cpu_core_ids));
-    topology->cpu_package_ids = calloc(topology->num_cpus, sizeof(*topology->cpu_package_ids));
-
-    if (!topology->cpu_core_ids || !topology->cpu_package_ids) {
-        free(topology->cpu_core_ids);
-        free(topology->cpu_package_ids);
-        topology->cpu_core_ids = NULL;
-        topology->cpu_package_ids = NULL;
-        fprintf(stderr, "Failed to create CPU topology due to insufficient space");
-        return -1;
-    }
-
-    for (int cpu = 0; cpu < topology->num_cpus; cpu++) {
-        topology->cpu_core_ids[cpu] = read_physical_core(cpu);
-        topology->cpu_package_ids[cpu] = read_package(cpu);
-
-        if (topology->cpu_core_ids[cpu] < 0 || topology->cpu_package_ids[cpu] < 0) {
-            fprintf(stderr,
-                    "Failed to read CPU topology for CPU %d: "
-                    "core=%d package=%d errno=%d\n",
-                    cpu,
-                    topology->cpu_core_ids[cpu],
-                    topology->cpu_package_ids[cpu],
-                    errno);
-
-            free(topology->cpu_core_ids);
-            free(topology->cpu_package_ids);
-            topology->cpu_core_ids = NULL;
-            topology->cpu_package_ids = NULL;
-            return -1;
-        }
-    }
-
-    return 0;
-}
-
-static void free_cpu_topology(struct cpu_topology *topology)
-{
-    free(topology->cpu_core_ids);
-    free(topology->cpu_package_ids);
-    topology->cpu_core_ids = NULL;
-    topology->cpu_package_ids = NULL;
-}
-
-static int get_physical_core(struct cpu_topology *topology, int logical_cpu)
-{
-    if (logical_cpu >= 0) {
-        if (logical_cpu < topology->num_cpus) {
-            return topology->cpu_core_ids[logical_cpu];
-        } else {
-            fprintf(stderr, "WARNING: CPU %d does not exist in topology cache. Attempting to read core id from system: ", logical_cpu);
-            return read_physical_core(logical_cpu);
-        }
-    } else {
-        fprintf(stderr, "WARNING: %d is an invalid CPU id", logical_cpu);
-        return -1;
-    }
-}
-
-static int get_package(struct cpu_topology *topology, int logical_cpu)
-{
-    if (logical_cpu >= 0) {
-        if (logical_cpu < topology->num_cpus) {
-            return topology->cpu_package_ids[logical_cpu];
-        } else {
-            fprintf(stderr, "WARNING: CPU %d does not exist in topology cache. Attempting to read package id from system: ", logical_cpu);
-            return read_package(logical_cpu);
-        }
-    } else {
-        fprintf(stderr, "WARNING: %d is an invalid CPU id", logical_cpu);
-        return -1;
-    }
-}
-
-void handle_event(void *ctx, int cpu, void *data, __u32 data_sz) {
     struct event_t *e = data;
     const char* signal = signal_to_string(e->signal);
 
@@ -285,14 +130,8 @@ void handle_event(void *ctx, int cpu, void *data, __u32 data_sz) {
 
 #ifdef TRACE_PF_CR2
     printf("\"page_faults\":[");
-    for_each(i, e->pf_count)
-    {
-        int core = get_physical_core(&cpu_topology, e->pf[i].cpu);
-        int package = get_package(&cpu_topology, e->pf[i].cpu);
-
-        printf("{\"ip\":\"0x%016llx\",\"cpu\":%u,\"core\":%d,\"package\":%d,\"cr2\":\"0x%016llx\",\"err\":\"0x%016llx\",\"tai\":%llu,",
-                e->pf[i].ip, e->pf[i].cpu, core, package, e->pf[i].cr2, e->pf[i].err, e->pf[i].tai);
-        print_opcodes("ip_snapshot", &e->pf[i].opcodes_ip, '}');
+    for_each(i, e->pf_count) {
+        print_pf_info(&e->pf[i], &cpu_topology);
 
         if (i + 1 != e->pf_count) {
             printf(",");
@@ -312,7 +151,7 @@ void handle_event(void *ctx, int cpu, void *data, __u32 data_sz) {
         int to_package = get_package(&cpu_topology, e->migration[i].to);
 
         printf("{\"tai\":%llu,\"from\":{\"cpu\":%d,\"core\":%d,\"package\":%d},\"to\":{\"cpu\":%d,\"core\":%d,\"package\":%d}}",
-                e->pf[i].tai, e->migration[i].from, from_core, from_package, e->migration[i].to, to_core, to_package);
+                e->migration[i].tai, e->migration[i].from, from_core, from_package, e->migration[i].to, to_core, to_package);
 
         if (i + 1 != e->migration_count) {
             printf(",");
@@ -337,97 +176,34 @@ void handle_event(void *ctx, int cpu, void *data, __u32 data_sz) {
     fflush(stdout);
 }
 
-
-void handle_lost_event(void *ctx, int cpu, __u64 cnt)
+static void handle_lost_event(void *ctx, int cpu, __u64 cnt)
 {
     fprintf(stderr, "Lost %llu events on CPU %d\n", cnt, cpu);
 
     fflush(stderr);
 }
 
-void sigint_handler(int dummy) {
+static void sigint_handler(int dummy)
+{
     running = 0;
 }
 
-void clean() {
-    if (!cpus_fd) return;
+static void clean(void)
+{
+    if (cpus_fd) {
+        for_each_cpu(cpu) {
+            ioctl(cpus_fd[cpu], PERF_EVENT_IOC_DISABLE, 0);
+        }
 
-    for_each_cpu(cpu) {
-       ioctl(cpus_fd[cpu], PERF_EVENT_IOC_DISABLE, 0);
+        free(cpus_fd);
     }
-
-    free(cpus_fd);
 
 #ifdef NEEDS_CPU_TOPOLOGY
     free_cpu_topology(&cpu_topology);
 #endif
 }
 
-void print_version(char const* prefix, FILE* out) {
-    fprintf(out, "%scommit %s committed on %s, kernel %d\n", prefix, GIT_REV, GIT_DATE, KERNEL_VERSION);
-}
-
-static const char* get_cgroup_version(void)
-{
-    FILE *fp = fopen("/proc/self/mountinfo", "r");
-    if (!fp)
-        return "none";
-
-    char *line = NULL;
-    size_t len = 0;
-    bool v1 = false;
-    bool v2 = false;
-
-    while (getline(&line, &len, fp) != -1) {
-        char *sep = strstr(line, " - ");
-        if (!sep)
-            continue;
-
-        sep += 3;
-
-        if (strncmp(sep, "cgroup2 ", 8) == 0)
-            v2 = true;
-        else if (strncmp(sep, "cgroup ", 7) == 0)
-            v1 = true;
-
-        if (v1 && v2)
-            break;
-    }
-
-    free(line);
-    fclose(fp);
-
-    if (v1 && v2)
-        return "hybrid";
-
-    if (v1)
-        return "v1";
-
-    if (v2)
-        return "v2";
-
-    return "none";
-}
-
-static void* kernel_tracing_proc(void *data)
-{
-    FILE *fp = data;
-
-    char *line = NULL;
-    size_t line_len = 0;
-    ssize_t read_len;
-    while ((read_len = getline(&line, &line_len, fp)) != -1) {
-        fprintf(stderr, "%s", line);
-    }
-
-    fclose(fp);
-    free(line);
-
-    return (void*)0;
-}
-
-struct args
-{
+struct args {
     bool print_version;
     bool trace_kernel_logs;
 };
@@ -448,7 +224,25 @@ static void parse_args(int argc, char **argv, struct args *args)
     }
 }
 
-int main(int argc, char *argv[]) {
+static void* kernel_tracing_proc(void *data)
+{
+    FILE *fp = data;
+
+    char *line = NULL;
+    size_t line_len = 0;
+    ssize_t read_len;
+    while ((read_len = getline(&line, &line_len, fp)) != -1) {
+        fprintf(stderr, "%s", line);
+    }
+
+    fclose(fp);
+    free(line);
+
+    return (void*)0;
+}
+
+int main(int argc, char *argv[])
+{
     struct args args;
     parse_args(argc, argv, &args);
 
@@ -477,9 +271,6 @@ int main(int argc, char *argv[]) {
     cgroup_version = get_cgroup_version();
     fprintf(stderr, "[*] cgroup version: %s\n", cgroup_version);
 
-    struct sigsegv_monitor_bpf *skel;
-    struct perf_buffer *pb = NULL;
-
     // Stop running if CTRL+C is entered
     signal(SIGINT, sigint_handler);
 
@@ -490,14 +281,25 @@ int main(int argc, char *argv[]) {
     // Enable LBR: seems it is working that way...
     setup_global_lbr();
 
-    skel = sigsegv_monitor_bpf__open();
-    if (!skel) return 1;
+    struct sigsegv_monitor_bpf *skel = sigsegv_monitor_bpf__open();
+    if (!skel) {
+        fprintf(stderr, "Failed to open BPF skeleton\n");
+        return 1;
+    }
+    if (sigsegv_monitor_bpf__load(skel)) {
+        fprintf(stderr, "Failed to load BPF program\n");
+        return 1;
+    }
+    if (sigsegv_monitor_bpf__attach(skel)) {
+        fprintf(stderr, "Failed to attach BPF program\n");
+        return 1;
+    }
 
-    if (sigsegv_monitor_bpf__load(skel)) return 1;
-    if (sigsegv_monitor_bpf__attach(skel)) return 1;
-
-    pb = perf_buffer__new(bpf_map__fd(skel->maps.events), 8, handle_event, handle_lost_event, NULL, NULL);
-    if (!pb) return 1;
+    struct perf_buffer* pb = perf_buffer__new(bpf_map__fd(skel->maps.events), 8, handle_event, handle_lost_event, NULL, NULL);
+    if (!pb) {
+        fprintf(stderr, "Failed to create perf buffer\n");
+        return 1;
+    }
 
     fprintf(stderr, "[*] Monitoring for SIGSEGV... (Ctrl+C to stop)\n");
 
@@ -513,6 +315,8 @@ int main(int argc, char *argv[]) {
         fclose(tracing_pipe_file);
     }
 
+    perf_buffer__free(pb);
+    sigsegv_monitor_bpf__destroy(skel);
     clean();
 
     return 0;
