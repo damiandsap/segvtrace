@@ -20,16 +20,22 @@ endif
 
 # Output executable name
 APP = sigsegv_monitor
+PF_APP = pagefault_monitor
 SAMPLE = sample_segfault
 LINES2FILE = lines2file
 
 # Source files
 BPF_SRC = sigsegv-monitor.bpf.c
 USER_SRC = sigsegv-monitor.c
+PF_BPF_SRC = pagefault-monitor.bpf.c
+PF_USER_SRC = pagefault-monitor.c
+COMMON_SRC = monitor-common.c
 
 # Generated files
 BPF_OBJ = $(BPF_SRC:.c=.o)
 SKEL_OBJ = $(BPF_SRC:.bpf.c=.skel.h)
+PF_BPF_OBJ = $(PF_BPF_SRC:.c=.o)
+PF_SKEL_OBJ = $(PF_BPF_SRC:.bpf.c=.skel.h)
 VMLINUX = vmlinux.h
 
 # Compiler flags
@@ -43,7 +49,7 @@ LIBS := -lbpf -lelf -lz
 
 .PHONY: all clean sample test
 
-all: $(APP) $(SAMPLE) $(LINES2FILE)
+all: $(APP) $(PF_APP) $(SAMPLE) $(LINES2FILE)
 
 sample: $(SAMPLE)
 
@@ -65,9 +71,21 @@ $(SKEL_OBJ): $(BPF_OBJ)
 	@echo "  GEN-SKEL $@"
 	$(BPFTOOL) gen skeleton $< > $@
 
-$(APP): $(USER_SRC) $(SKEL_OBJ)
+$(APP): $(USER_SRC) $(COMMON_SRC) $(SKEL_OBJ)
 	@echo "  CC      $@"
-	$(CLANG) $(CFLAGS) $(USER_SRC) $(LIBS) -o $@
+	$(CLANG) $(CFLAGS) $(USER_SRC) $(COMMON_SRC) $(LIBS) -o $@
+
+$(PF_BPF_OBJ): $(PF_BPF_SRC) $(VMLINUX)
+	@echo "  BPF     $@"
+	$(CLANG) $(BPF_CFLAGS) -c $< -o $@
+
+$(PF_SKEL_OBJ): $(PF_BPF_OBJ)
+	@echo "  GEN-SKEL $@"
+	$(BPFTOOL) gen skeleton $< > $@
+
+$(PF_APP): $(PF_USER_SRC) $(COMMON_SRC) $(PF_SKEL_OBJ)
+	@echo "  CC      $@"
+	$(CLANG) $(CFLAGS) $(PF_USER_SRC) $(COMMON_SRC) $(LIBS) -o $@
 
 $(SAMPLE): sample_segfault.c
 	@echo "  CC      $@"
@@ -79,4 +97,4 @@ $(LINES2FILE): lines2file.c
 
 clean:
 	@echo "  CLEAN"
-	rm -f $(APP) $(BPF_OBJ) $(SKEL_OBJ) $(VMLINUX) $(SAMPLE) $(LINES2FILE)
+	rm -f $(APP) $(BPF_OBJ) $(SKEL_OBJ) $(PF_APP) $(PF_BPF_OBJ) $(PF_SKEL_OBJ) $(VMLINUX) $(SAMPLE) $(LINES2FILE)

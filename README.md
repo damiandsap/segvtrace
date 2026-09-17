@@ -62,6 +62,9 @@ Failed to enable LBR on CPU 9 (Root required?)
 ```
 despite running as root, then the problem is most likely lack of LBR support or having LBR disabled in the hypervisor.
 
+A separate page fault tracer could also be found in this repository, which records every user-space page fault:
+
+`sudo ./pagefault-monitor`
 
 ## Example
 
