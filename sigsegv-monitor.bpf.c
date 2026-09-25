@@ -4,6 +4,7 @@
 #include <bpf/bpf_tracing.h>
 #include "sigsegv-monitor.h"
 #include "ringbuf.h"
+#include "utils.h"
 
 // See https://docs.ebpf.io/linux/program-type/BPF_PROG_TYPE_TRACEPOINT/
 // #define HAS_KFUNCS_IN_TRACEPOINTS (KERNEL_VERSION >= 6012)
@@ -229,7 +230,7 @@ int trace_page_fault(struct trace_event_raw_page_fault_user *ctx) {
 
     struct task_struct *task = bpf_get_current_task_btf();
 
-    struct pf_info_rb *cr2stats = bpf_task_storage_get(&pid_cr2, task, 0, BPF_LOCAL_STORAGE_GET_F_CREATE);
+    struct pf_info_rb *cr2stats = bpf_task_storage_get(&pid_cr2, task, NULL, BPF_LOCAL_STORAGE_GET_F_CREATE);
     if (cr2stats) {
         pf_info_rb_push(cr2stats, &stat);
     } else {
@@ -253,7 +254,7 @@ int handle_migrate(struct trace_event_raw_sched_migrate_task *ctx)
     struct task_struct *task = bpf_task_from_pid(ctx->pid);
 
     if (task) {
-        struct cpu_migration_info_rb *cpu_migr_stats = bpf_task_storage_get(&pid_cpu_migr, task, 0, BPF_LOCAL_STORAGE_GET_F_CREATE);
+        struct cpu_migration_info_rb *cpu_migr_stats = bpf_task_storage_get(&pid_cpu_migr, task, NULL, BPF_LOCAL_STORAGE_GET_F_CREATE);
         if (cpu_migr_stats) {
             cpu_migration_info_rb_push(cpu_migr_stats, &stat);
         } else {
