@@ -1,10 +1,9 @@
-#include "vmlinux.h"
+#include "monitor-common.bpf.h"
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_core_read.h>
 #include <bpf/bpf_tracing.h>
 #include "monitor-types.bpf.h"
 #include "pagefault-monitor.h"
-#include "monitor-common.bpf.h"
 
 // Output map (for user space)
 struct {

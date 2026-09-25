@@ -57,7 +57,8 @@ static void setup_global_lbr(void)
     pe.exclude_kernel = 1;
 #endif
 
-    for_each_cpu(cpu) {
+    int cpu_count = get_nprocs_conf();
+    for (int cpu = 0; cpu < cpu_count; cpu++) {
         //                                          pid     group_fs, flags
         int fd = syscall(__NR_perf_event_open, &pe, -1, cpu, -1, 0);
 
@@ -130,7 +131,7 @@ static void handle_event(void *ctx, int cpu, void *data, __u32 data_sz)
 
 #ifdef TRACE_PF_CR2
     printf("\"page_faults\":[");
-    for_each(i, e->pf_count) {
+    for (u32 i = 0; i < e->pf_count; i++) {
         print_pf_info(&e->pf[i], &cpu_topology);
 
         if (i + 1 != e->pf_count) {
@@ -142,8 +143,7 @@ static void handle_event(void *ctx, int cpu, void *data, __u32 data_sz)
 
 #ifdef TRACE_CPU_MIGRATIONS
     printf("\"cpu_migrations\":[");
-    for_each(i, e->migration_count)
-    {
+    for (u32 i = 0; i < e->migration_count; i++) {
         int from_core = get_physical_core(&cpu_topology, e->migration[i].from);
         int from_package = get_package(&cpu_topology, e->migration[i].from);
 
@@ -162,14 +162,16 @@ static void handle_event(void *ctx, int cpu, void *data, __u32 data_sz)
 
     printf("\"lbr\":[");
     int lbr_limit = (e->lbr_count < MAX_LBR_ENTRIES) ? e->lbr_count : MAX_LBR_ENTRIES;
-    for_each(i, lbr_limit) {
-        if (i > 0) printf(",");
+    for (int i = 0; i < lbr_limit; i++) {
+        if (i > 0)
+            printf(",");
+
         if (e->lbr[i].from == 0 && e->lbr[i].to == 0)
             printf("null");
         else
             printf("{\"from\":\"0x%llx\",\"to\":\"0x%llx\"}",
-                (unsigned long long)e->lbr[i].from,
-                (unsigned long long)e->lbr[i].to);
+                    (unsigned long long)e->lbr[i].from,
+                    (unsigned long long)e->lbr[i].to);
     }
     printf("]}\n");
 
@@ -191,7 +193,8 @@ static void sigint_handler(int dummy)
 static void clean(void)
 {
     if (cpus_fd) {
-        for_each_cpu(cpu) {
+        int cpu_count = get_nprocs_conf();
+        for (int cpu = 0; cpu < cpu_count; cpu++) {
             ioctl(cpus_fd[cpu], PERF_EVENT_IOC_DISABLE, 0);
         }
 

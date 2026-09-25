@@ -5,9 +5,6 @@
 
 #include "monitor-types.h"
 
-#define for_each(i, cond) for (int (i) = 0; (i) < (cond); (i)++)
-#define for_each_cpu(cpu) for_each(cpu, get_nprocs_conf())
-
 struct cpu_topology {
     int *cpu_core_ids;
     int *cpu_package_ids;

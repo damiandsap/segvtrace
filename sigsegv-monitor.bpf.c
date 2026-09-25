@@ -1,9 +1,8 @@
-#include "vmlinux.h"
+#include "monitor-common.bpf.h"
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_core_read.h>
 #include <bpf/bpf_tracing.h>
 #include "sigsegv-monitor.h"
-#include "monitor-common.bpf.h"
 #include "ringbuf.h"
 
 // See https://docs.ebpf.io/linux/program-type/BPF_PROG_TYPE_TRACEPOINT/

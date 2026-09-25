@@ -3,5 +3,6 @@ vmlinux.h
 *.skel.h
 sigsegv_monitor
 sample_segfault
+pagefault_monitor
 __pycache__
 lines2file
