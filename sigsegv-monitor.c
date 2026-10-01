@@ -312,7 +312,7 @@ void handle_event(void *ctx, int cpu, void *data, __u32 data_sz) {
         int to_package = get_package(&cpu_topology, e->migration[i].to);
 
         printf("{\"tai\":%llu,\"from\":{\"cpu\":%d,\"core\":%d,\"package\":%d},\"to\":{\"cpu\":%d,\"core\":%d,\"package\":%d}}",
-                e->pf[i].tai, e->migration[i].from, from_core, from_package, e->migration[i].to, to_core, to_package);
+                e->migration[i].tai, e->migration[i].from, from_core, from_package, e->migration[i].to, to_core, to_package);
 
         if (i + 1 != e->migration_count) {
             printf(",");
