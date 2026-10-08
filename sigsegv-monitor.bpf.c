@@ -1,9 +1,10 @@
-#include "vmlinux.h"
+#include "monitor-common.bpf.h"
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_core_read.h>
 #include <bpf/bpf_tracing.h>
 #include "sigsegv-monitor.h"
 #include "ringbuf.h"
+#include "utils.h"
 
 // See https://docs.ebpf.io/linux/program-type/BPF_PROG_TYPE_TRACEPOINT/
 // #define HAS_KFUNCS_IN_TRACEPOINTS (KERNEL_VERSION >= 6012)
@@ -15,13 +16,7 @@
 // will show the bpf_printk() output
 
 #ifdef TRACE_PF_CR2
-struct trace_event_raw_page_fault_user {
-    struct trace_entry ent;
-    unsigned long address;
-    unsigned long ip;
-    unsigned long error_code;
-    char __data[0];
-};
+#include "monitor-types.bpf.h"
 
 // Ring buffer of Page Fault information.
 // NOTE: pf_info_rb must be valid when zero-initialized, since
@@ -79,25 +74,8 @@ struct {
     __type(value, struct event_t);
 } heap SEC(".maps");
 
-inline void split_2u32(u64 in, u32* lower, u32* upper)
-{
-    *lower = (u32)in;
-    *upper = (u32)(in >> 32);
-}
-
-static void get_opcodes(void *addr, struct opcode_list *list)
-{
-    for (u32 i = 0; i < OPCODES_SIZE; i++)
-        list->opcodes[i] = 0;
-
-   list->err = bpf_probe_read_user(list->opcodes, OPCODES_SIZE, addr);
-}
-
 SEC("tracepoint/signal/signal_generate")
 int trace_signal(struct trace_event_raw_signal_generate *ctx) {
-    struct task_struct *task = NULL;
-    struct pt_regs *regs = NULL;
-    struct event_t *event;
     u32 key = 0;
 
     // SIGSEGV = 11
@@ -105,7 +83,7 @@ int trace_signal(struct trace_event_raw_signal_generate *ctx) {
     if (ctx->sig != 11 && ctx->sig != 4)
         return 0;
 
-    event = bpf_map_lookup_elem(&heap, &key);
+    struct event_t* event = bpf_map_lookup_elem(&heap, &key);
     if (!event)
         return 0; // Should never happen
 
@@ -115,7 +93,7 @@ int trace_signal(struct trace_event_raw_signal_generate *ctx) {
 
     split_2u32(bpf_get_current_pid_tgid(), &event->pid, &event->tgid);
 
-    task = bpf_get_current_task_btf();
+    struct task_struct* task = bpf_get_current_task_btf();
     bpf_probe_read_kernel_str(&event->comm, sizeof(event->comm), &task->comm);
     bpf_probe_read_kernel_str(&event->tgleader_comm, sizeof(event->tgleader_comm), &task->group_leader->comm);
     // TODO: can the acquisition of pidns_tgid, pidns_pid be made more robust / simplified?
@@ -141,7 +119,7 @@ int trace_signal(struct trace_event_raw_signal_generate *ctx) {
     event->regs.err = task->thread.error_code;
 
     // TODO: how are these regs acquired?
-    regs = (struct pt_regs *)bpf_task_pt_regs(task);
+    struct pt_regs* regs = (struct pt_regs*)bpf_task_pt_regs(task);
     if (regs) {
         event->regs.rip = regs->ip;
         event->regs.rsp = regs->sp;
@@ -252,7 +230,7 @@ int trace_page_fault(struct trace_event_raw_page_fault_user *ctx) {
 
     struct task_struct *task = bpf_get_current_task_btf();
 
-    struct pf_info_rb *cr2stats = bpf_task_storage_get(&pid_cr2, task, 0, BPF_LOCAL_STORAGE_GET_F_CREATE);
+    struct pf_info_rb *cr2stats = bpf_task_storage_get(&pid_cr2, task, NULL, BPF_LOCAL_STORAGE_GET_F_CREATE);
     if (cr2stats) {
         pf_info_rb_push(cr2stats, &stat);
     } else {
@@ -276,7 +254,7 @@ int handle_migrate(struct trace_event_raw_sched_migrate_task *ctx)
     struct task_struct *task = bpf_task_from_pid(ctx->pid);
 
     if (task) {
-        struct cpu_migration_info_rb *cpu_migr_stats = bpf_task_storage_get(&pid_cpu_migr, task, 0, BPF_LOCAL_STORAGE_GET_F_CREATE);
+        struct cpu_migration_info_rb *cpu_migr_stats = bpf_task_storage_get(&pid_cpu_migr, task, NULL, BPF_LOCAL_STORAGE_GET_F_CREATE);
         if (cpu_migr_stats) {
             cpu_migration_info_rb_push(cpu_migr_stats, &stat);
         } else {
