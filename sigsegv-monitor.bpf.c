@@ -226,7 +226,7 @@ int trace_signal(struct trace_event_raw_signal_generate *ctx) {
     if (event->lbr_count > 0) {
         get_opcodes((void*)event->lbr[0].from, &event->opcodes_last_jmp_source);
         get_opcodes((void*)event->lbr[0].to, &event->opcodes_last_jmp_target);
-    } 
+    }
 
     get_opcodes((void*)(event->regs.rip - OPCODES_PROLOGUE_SIZE), &event->opcodes_ip);
 
@@ -304,6 +304,18 @@ int handle_migrate(struct trace_event_raw_sched_migrate_task *ctx)
 
     return 0;
 }
+
+#if !HAS_KFUNCS_IN_TRACEPOINTS
+SEC("tracepoint/sched/sched_process_free")
+int on_exit(struct trace_event_raw_sched_process_template *ctx)
+{
+    pid_t pid = ctx->pid;
+    bpf_map_delete_elem(&pid_cpu_migr, &pid);
+
+    return 0;
+}
+#endif
+
 #endif
 
 char LICENSE[] SEC("license") = "GPL";
