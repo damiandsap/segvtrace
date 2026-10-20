@@ -224,8 +224,8 @@ int trace_signal(struct trace_event_raw_signal_generate *ctx) {
     event->opcodes_last_jmp_source.err = 1;
     event->opcodes_last_jmp_target.err = 1;
     if (event->lbr_count > 0) {
-        get_opcodes((void*)event->lbr[0].from, &event->opcodes_last_jmp_source);
-        get_opcodes((void*)event->lbr[0].to, &event->opcodes_last_jmp_target);
+        get_opcodes((void*)(event->lbr[0].from - OPCODES_PROLOGUE_SIZE), &event->opcodes_last_jmp_source);
+        get_opcodes((void*)(event->lbr[0].to - OPCODES_PROLOGUE_SIZE), &event->opcodes_last_jmp_target);
     }
 
     get_opcodes((void*)(event->regs.rip - OPCODES_PROLOGUE_SIZE), &event->opcodes_ip);
