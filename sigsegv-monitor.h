@@ -1,36 +1,14 @@
 #pragma once
 
+#include "monitor-types.h"
+
 #define MAX_LBR_ENTRIES 32
 #define MAX_USER_PF_ENTRIES 16
 #define MAX_CPU_MIGRATION_ENTRIES 16
 
-#define OPCODES_SIZE 64
-#define OPCODES_PROLOGUE_SIZE 42
-
 #define TRACE_PF_CR2
 #define TRACE_CPU_MIGRATIONS
 // #define TRACE_KERNEL_SPACE_BRANCHES
-
-struct opcode_list {
-    u8 opcodes[OPCODES_SIZE];
-    s64 err;  // 0 = success, 1 = skipped on purpose, negative = bpf_probe_read_user error
-};
-
-struct pf_info {
-    u32 cpu;
-    u64 cr2;
-    u64 err;
-    u64 tai;
-    u64 ip;
-
-    struct opcode_list opcodes_ip;
-};
-
-struct cpu_migration_info {
-    int from;
-    int to;
-    u64 tai; // time atomic international
-};
 
 struct user_regs_t {
     u64 rip;
